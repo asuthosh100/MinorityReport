@@ -48,6 +48,13 @@ export async function POST(request: NextRequest) {
             : `Agent B stake failed: ${stakeBResult.error}`,
         });
 
+        if (!stakeAResult.success || !stakeBResult.success) {
+          send("error", {
+            message: "Staking failed. Query aborted — both agents must stake before proceeding.",
+          });
+          return;
+        }
+
         // Step 2: Query models
         send("step", { message: "Querying Agent A (OpenAI gpt-4o-mini)..." });
         send("step", { message: "Querying Agent B (Gemini 2.0 Flash)..." });

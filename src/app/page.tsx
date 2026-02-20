@@ -24,7 +24,7 @@ interface WalletInfo {
   agent: string;
   eoa: string;
   aaWallet: string;
-  balance: { kite: string };
+  balance: { kite: string; usdt: string };
 }
 
 interface QueryResult {
@@ -224,8 +224,9 @@ function WalletPanel({ wallets }: { wallets: Record<string, WalletInfo | { error
             <p className="mt-1 font-mono text-xs text-zinc-600 dark:text-zinc-400 truncate" title={info.aaWallet}>
               {info.aaWallet}
             </p>
-            <div className="mt-2 text-xs">
+            <div className="mt-2 flex gap-3 text-xs">
               <span className="text-zinc-500">{parseFloat(info.balance.kite).toFixed(4)} KITE</span>
+              <span className="text-emerald-500">{parseFloat(info.balance.usdt).toFixed(2)} USDT</span>
             </div>
           </div>
         );

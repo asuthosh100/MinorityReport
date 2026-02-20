@@ -4,6 +4,7 @@ import {
   KITE_NETWORK,
   KITE_RPC_URL,
   KITE_BUNDLER_URL,
+  SETTLEMENT_TOKEN,
 } from "./config";
 
 let sdkInstance: GokiteAASDK | null = null;
@@ -49,11 +50,23 @@ export function getSignFunction(
 
 export async function getBalance(
   agent: "A" | "B" | "verifier"
-): Promise<{ kite: string }> {
+): Promise<{ kite: string; usdt: string }> {
   const provider = new ethers.JsonRpcProvider(KITE_RPC_URL);
   const aaAddress = getAAWalletAddress(agent);
-  const kiteBalance = await provider.getBalance(aaAddress);
-  return { kite: ethers.formatEther(kiteBalance) };
+
+  const erc20 = new ethers.Contract(SETTLEMENT_TOKEN, [
+    "function balanceOf(address) view returns (uint256)",
+  ], provider);
+
+  const [kiteBalance, usdtBalance] = await Promise.all([
+    provider.getBalance(aaAddress),
+    erc20.balanceOf(aaAddress),
+  ]);
+
+  return {
+    kite: ethers.formatEther(kiteBalance),
+    usdt: ethers.formatEther(usdtBalance),
+  };
 }
 
 export async function getAllWalletInfo() {

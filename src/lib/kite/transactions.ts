@@ -3,6 +3,7 @@ import { getSDK, getEOA, getAAWalletAddress, getSignFunction } from "./wallets";
 import {
   STAKE_AMOUNT,
   VERIFIER_CUT_PERCENT,
+  SETTLEMENT_TOKEN,
 } from "./config";
 
 export interface TransactionResult {
@@ -13,6 +14,7 @@ export interface TransactionResult {
 
 /**
  * Transfer native KITE from one agent's AA wallet to another address.
+ * Uses estimateUserOperation + sendUserOperationWithPayment for proper gas buffers.
  */
 async function transferKite(
   from: "A" | "B" | "verifier",
@@ -30,13 +32,18 @@ async function transferKite(
   };
 
   try {
-    const result = await sdk.sendUserOperationAndWait(
+    // Step 1: Estimate gas (adds proper buffers to verificationGasLimit)
+    const estimate = await sdk.estimateUserOperation(eoa, transferRequest);
+
+    // Step 2: Send with estimated gas, paying gas fees via USDT settlement token
+    const result = await sdk.sendUserOperationWithPayment(
       eoa,
       transferRequest,
+      estimate.userOp,
+      SETTLEMENT_TOKEN,
       signFn,
-      undefined,          // salt
-      ethers.ZeroAddress,  // skip token paymaster, pay gas with native KITE
     );
+
     if (result.status.status === "success") {
       return { success: true, transactionHash: result.status.transactionHash };
     }
