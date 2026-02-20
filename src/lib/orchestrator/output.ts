@@ -1,8 +1,20 @@
-import { queryOpenAI } from "@/lib/models/openai";
+import { runVerification, type VerificationResult } from "@/lib/verifier/claude";
+import { stakeFromAgent, distributeRewards, type TransactionResult } from "@/lib/kite/transactions";
 import type { InputOrchestratorResult } from "./input";
 
+export interface TransactionInfo {
+  stakeA: TransactionResult;
+  stakeB: TransactionResult;
+  reward: {
+    winnerTx: TransactionResult;
+    verifierCut: string;
+    winnerAmount: string;
+  } | null;
+}
+
 export interface OutputOrchestratorResult {
-  synthesis: string;
+  verification: VerificationResult;
+  transactions: TransactionInfo;
   individualResponses: InputOrchestratorResult;
 }
 
@@ -10,43 +22,47 @@ export async function outputOrchestrator(
   query: string,
   responses: InputOrchestratorResult
 ): Promise<OutputOrchestratorResult> {
-  const parts: string[] = [];
+  // Step 1: Stake from both agents in parallel
+  const [stakeA, stakeB] = await Promise.allSettled([
+    stakeFromAgent("A"),
+    stakeFromAgent("B"),
+  ]);
 
-  if (responses.openai.content) {
-    parts.push(`**OpenAI (${responses.openai.model}):**\n${responses.openai.content}`);
-  }
-  if (responses.gemini.content) {
-    parts.push(`**Gemini (${responses.gemini.model}):**\n${responses.gemini.content}`);
-  }
+  const stakeAResult: TransactionResult =
+    stakeA.status === "fulfilled"
+      ? stakeA.value
+      : { success: false, error: String(stakeA.reason) };
+  const stakeBResult: TransactionResult =
+    stakeB.status === "fulfilled"
+      ? stakeB.value
+      : { success: false, error: String(stakeB.reason) };
 
-  if (parts.length === 0) {
-    return {
-      synthesis: "Both models failed to respond. Please try again.",
-      individualResponses: responses,
+  // Step 2: Run VeriScore verification pipeline
+  const verification = await runVerification(
+    query,
+    responses.openai.content || "",
+    responses.gemini.content || ""
+  );
+
+  // Step 3: Distribute rewards to winner
+  let reward: TransactionInfo["reward"] = null;
+  try {
+    reward = await distributeRewards(verification.claims.winner);
+  } catch (error) {
+    reward = {
+      winnerTx: { success: false, error: String(error) },
+      verifierCut: "0",
+      winnerAmount: "0",
     };
   }
-
-  if (parts.length === 1) {
-    return {
-      synthesis: parts[0],
-      individualResponses: responses,
-    };
-  }
-
-  const metaPrompt = `You are a synthesis assistant. A user asked the following question:
-
-"${query}"
-
-Two AI models provided these responses:
-
-${parts.join("\n\n")}
-
-Synthesize the best possible answer by combining the strengths of both responses. Be concise and accurate. If the responses conflict, note the disagreement and provide the most well-supported answer.`;
-
-  const synthesis = await queryOpenAI(metaPrompt);
 
   return {
-    synthesis,
+    verification,
+    transactions: {
+      stakeA: stakeAResult,
+      stakeB: stakeBResult,
+      reward,
+    },
     individualResponses: responses,
   };
 }

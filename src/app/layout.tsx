@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "OpenClaw",
-  description: "Multi-model AI query orchestrator",
+  title: "Sniper",
+  description: "Multi-model AI orchestrator with VeriScore verification and Kite staking",
 };
 
 export default function RootLayout({
