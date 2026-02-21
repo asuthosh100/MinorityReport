@@ -1214,8 +1214,6 @@ export default function Home() {
                         <div className="p-4">
                           {result.individualResponses.openai.error ? (
                             <p className="text-red-500">{result.individualResponses.openai.error}</p>
-                          ) : (result.verification.classifierResult?.responses?.["gpt"] || result.verification.classifierResult?.responses?.["gpt-4"]) ? (
-                            <AnnotatedResponse text={result.verification.classifierResult.responses["gpt"] || result.verification.classifierResult.responses["gpt-4"]} />
                           ) : (
                             <StreamingResponse content={result.individualResponses.openai.content} />
                           )}
@@ -1239,8 +1237,6 @@ export default function Home() {
                         <div className="p-4">
                           {result.individualResponses.gemini.error ? (
                             <p className="text-red-500">{result.individualResponses.gemini.error}</p>
-                          ) : result.verification.classifierResult?.responses?.["gemini"] ? (
-                            <AnnotatedResponse text={result.verification.classifierResult.responses["gemini"]} />
                           ) : (
                             <StreamingResponse content={result.individualResponses.gemini.content} />
                           )}
@@ -1264,8 +1260,6 @@ export default function Home() {
                         <div className="p-4">
                           {result.individualResponses.claude.error ? (
                             <p className="text-red-500">{result.individualResponses.claude.error}</p>
-                          ) : result.verification.classifierResult?.responses?.["claude"] ? (
-                            <AnnotatedResponse text={result.verification.classifierResult.responses["claude"]} />
                           ) : (
                             <StreamingResponse content={result.individualResponses.claude.content} />
                           )}
