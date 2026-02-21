@@ -650,7 +650,7 @@ function WalletPanel({ wallets }: { wallets: Record<string, WalletInfo | { error
     { key: "agentA", label: "Agent A (OpenAI)" },
     { key: "agentB", label: "Agent B (Gemini)" },
     { key: "agentC", label: "Agent C (Claude)" },
-    { key: "verifier", label: "Verifier (Claude)" },
+    { key: "verifier", label: "Verifier" },
   ];
 
   return (
@@ -1054,7 +1054,7 @@ export default function Home() {
           {!hasActivity && (
             <div className="flex min-h-[60vh] flex-col items-center justify-center">
               <h1 className="mb-1 text-3xl font-bold tracking-tight text-[#ECECEC]">
-                Sniper
+                Minority Report
               </h1>
               <p className="mb-8 text-[#888888]">
                 Multi-model AI orchestrator with VeriScore verification and Kite escrow
