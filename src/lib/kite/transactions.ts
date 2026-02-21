@@ -1,0 +1,90 @@
+import { ethers } from "ethers";
+import { getSDK, getEOA, getAAWalletAddress, getSignFunction } from "./wallets";
+import {
+  ESCROW_AMOUNT,
+  VERIFIER_CUT_PERCENT,
+  SETTLEMENT_TOKEN,
+} from "./config";
+import type { AgentId } from "@/lib/types";
+
+export interface TransactionResult {
+  success: boolean;
+  transactionHash?: string;
+  error?: string;
+}
+
+/**
+ * Transfer native KITE from one agent's AA wallet to another address.
+ * Uses estimateUserOperation + sendUserOperationWithPayment for proper gas buffers.
+ */
+async function transferKite(
+  from: AgentId | "verifier",
+  toAddress: string,
+  amount: string
+): Promise<TransactionResult> {
+  const sdk = getSDK();
+  const eoa = getEOA(from);
+  const signFn = getSignFunction(from);
+
+  const transferRequest = {
+    target: toAddress,
+    value: ethers.parseEther(amount),
+    callData: "0x",
+  };
+
+  try {
+    // Step 1: Estimate gas (adds proper buffers to verificationGasLimit)
+    const estimate = await sdk.estimateUserOperation(eoa, transferRequest);
+
+    // Step 2: Send with estimated gas, paying gas fees via USDT settlement token
+    const result = await sdk.sendUserOperationWithPayment(
+      eoa,
+      transferRequest,
+      estimate.userOp,
+      SETTLEMENT_TOKEN,
+      signFn,
+    );
+
+    if (result.status.status === "success") {
+      return { success: true, transactionHash: result.status.transactionHash };
+    }
+    return { success: false, error: result.status.reason || "Transaction failed" };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+}
+
+/**
+ * Escrow KITE from an agent to the verifier's AA wallet.
+ */
+export async function escrowFromAgent(
+  agent: AgentId
+): Promise<TransactionResult> {
+  const verifierWallet = getAAWalletAddress("verifier");
+  return transferKite(agent, verifierWallet, ESCROW_AMOUNT);
+}
+
+/**
+ * Distribute the escrow pool: winner gets 90%, verifier keeps 10%.
+ */
+export async function distributeRewards(
+  winner: AgentId
+): Promise<{ winnerTx: TransactionResult; verifierCut: string; winnerAmount: string }> {
+  const totalPool = parseFloat(ESCROW_AMOUNT) * 3;
+  const verifierCut = (totalPool * VERIFIER_CUT_PERCENT) / 100;
+  const winnerAmount = totalPool - verifierCut;
+
+  // Verifier sends the winner's share to the winner's AA wallet
+  const winnerWallet = getAAWalletAddress(winner);
+  const winnerTx = await transferKite(
+    "verifier",
+    winnerWallet,
+    winnerAmount.toString()
+  );
+
+  return {
+    winnerTx,
+    verifierCut: verifierCut.toString(),
+    winnerAmount: winnerAmount.toString(),
+  };
+}

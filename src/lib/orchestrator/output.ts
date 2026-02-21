@@ -1,8 +1,21 @@
-import { queryOpenAI } from "@/lib/models/openai";
+import { runVerification, type VerificationResult } from "@/lib/verifier/claude";
+import { escrowFromAgent, distributeRewards, type TransactionResult } from "@/lib/kite/transactions";
 import type { InputOrchestratorResult } from "./input";
 
+export interface TransactionInfo {
+  escrowA: TransactionResult;
+  escrowB: TransactionResult;
+  escrowC: TransactionResult;
+  reward: {
+    winnerTx: TransactionResult;
+    verifierCut: string;
+    winnerAmount: string;
+  } | null;
+}
+
 export interface OutputOrchestratorResult {
-  synthesis: string;
+  verification: VerificationResult;
+  transactions: TransactionInfo;
   individualResponses: InputOrchestratorResult;
 }
 
@@ -10,43 +23,54 @@ export async function outputOrchestrator(
   query: string,
   responses: InputOrchestratorResult
 ): Promise<OutputOrchestratorResult> {
-  const parts: string[] = [];
+  // Step 1: Escrow from all three agents in parallel
+  const [escrowA, escrowB, escrowC] = await Promise.allSettled([
+    escrowFromAgent("A"),
+    escrowFromAgent("B"),
+    escrowFromAgent("C"),
+  ]);
 
-  if (responses.openai.content) {
-    parts.push(`**OpenAI (${responses.openai.model}):**\n${responses.openai.content}`);
-  }
-  if (responses.gemini.content) {
-    parts.push(`**Gemini (${responses.gemini.model}):**\n${responses.gemini.content}`);
-  }
+  const escrowAResult: TransactionResult =
+    escrowA.status === "fulfilled"
+      ? escrowA.value
+      : { success: false, error: String(escrowA.reason) };
+  const escrowBResult: TransactionResult =
+    escrowB.status === "fulfilled"
+      ? escrowB.value
+      : { success: false, error: String(escrowB.reason) };
+  const escrowCResult: TransactionResult =
+    escrowC.status === "fulfilled"
+      ? escrowC.value
+      : { success: false, error: String(escrowC.reason) };
 
-  if (parts.length === 0) {
-    return {
-      synthesis: "Both models failed to respond. Please try again.",
-      individualResponses: responses,
+  // Step 2: Run VeriScore verification pipeline
+  const verification = await runVerification(
+    query,
+    responses.openai.content || "",
+    responses.gemini.content || "",
+    responses.claude.content || ""
+  );
+
+  // Step 3: Distribute rewards to winner
+  let reward: TransactionInfo["reward"] = null;
+  try {
+    reward = await distributeRewards(verification.claims.winner);
+  } catch (error) {
+    reward = {
+      winnerTx: { success: false, error: String(error) },
+      verifierCut: "0",
+      winnerAmount: "0",
     };
   }
-
-  if (parts.length === 1) {
-    return {
-      synthesis: parts[0],
-      individualResponses: responses,
-    };
-  }
-
-  const metaPrompt = `You are a synthesis assistant. A user asked the following question:
-
-"${query}"
-
-Two AI models provided these responses:
-
-${parts.join("\n\n")}
-
-Synthesize the best possible answer by combining the strengths of both responses. Be concise and accurate. If the responses conflict, note the disagreement and provide the most well-supported answer.`;
-
-  const synthesis = await queryOpenAI(metaPrompt);
 
   return {
-    synthesis,
+    verification,
+    transactions: {
+      escrowA: escrowAResult,
+      escrowB: escrowBResult,
+      escrowC: escrowCResult,
+      reward,
+    },
     individualResponses: responses,
   };
 }
