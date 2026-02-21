@@ -1,3 +1,5 @@
+export const maxDuration = 300;
+
 import { NextRequest } from "next/server";
 import { inputOrchestrator } from "@/lib/orchestrator/input";
 import { escrowFromAgent, distributeRewards } from "@/lib/kite/transactions";
@@ -203,7 +205,8 @@ export async function POST(request: NextRequest) {
           query,
           individualResponses.openai.content || "",
           individualResponses.gemini.content || "",
-          individualResponses.claude.content || ""
+          individualResponses.claude.content || "",
+          () => send("step", { message: "Running cross-LLM classifier analysis..." })
         );
 
         const totalClaims = verification.claims.allClaims.length;

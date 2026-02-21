@@ -1,4 +1,5 @@
-import { runVeriScore, type VeriScoreAgentResult } from "./claim-extractor";
+import { runVeriScore, type VeriScoreAgentResult, type VeriScoreResults } from "./claim-extractor";
+import { callClassifier, type ClassifierResult } from "./classifier";
 import type { AgentId } from "@/lib/types";
 
 export interface ClaimClassification {
@@ -24,6 +25,7 @@ export interface VerificationResult {
     agentB: AgentScore;
     agentC: AgentScore;
   };
+  classifierResult?: ClassifierResult | null;
 }
 
 function buildClaims(
@@ -53,7 +55,8 @@ export async function runVerification(
   query: string,
   agentAResponse: string,
   agentBResponse: string,
-  agentCResponse: string
+  agentCResponse: string,
+  onClassifierStart?: () => void
 ): Promise<VerificationResult> {
   const vs = await runVeriScore(query, agentAResponse, agentBResponse, agentCResponse);
 
@@ -77,8 +80,17 @@ export async function runVerification(
   ];
   agents.sort((a, b) => b.precision - a.precision || b.supported - a.supported);
 
+  // Run classifier for cross-LLM analysis
+  onClassifierStart?.();
+  const classifierResult = await callClassifier(
+    query,
+    { openai: agentAResponse, gemini: agentBResponse, claude: agentCResponse },
+    vs
+  );
+
   return {
     claims: { allClaims, winner: agents[0].id },
     scores,
+    classifierResult,
   };
 }
