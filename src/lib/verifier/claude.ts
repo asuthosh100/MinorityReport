@@ -1,10 +1,52 @@
-import { extractClaims } from "./claim-extractor";
-import { verifyClaims, type CrossAgentResult } from "./claim-verifier";
-import { computeScores, type ScoreResult } from "./scorer";
+import { runVeriScore, type VeriScoreAgentResult } from "./claim-extractor";
+import type { AgentId } from "@/lib/types";
+
+export interface ClaimClassification {
+  claim: string;
+  source: AgentId;
+  status: "supported" | "inconclusive";
+}
+
+export interface AgentScore {
+  total: number;
+  supported: number;
+  inconclusive: number;
+  precision: number;
+}
 
 export interface VerificationResult {
-  claims: CrossAgentResult;
-  scores: ScoreResult;
+  claims: {
+    allClaims: ClaimClassification[];
+    winner: AgentId;
+  };
+  scores: {
+    agentA: AgentScore;
+    agentB: AgentScore;
+    agentC: AgentScore;
+  };
+}
+
+function buildClaims(
+  result: VeriScoreAgentResult,
+  source: AgentId
+): ClaimClassification[] {
+  return result.claims.map((c) => ({
+    claim: c.claim,
+    source,
+    status:
+      c.verificationResult === "supported"
+        ? ("supported" as const)
+        : ("inconclusive" as const),
+  }));
+}
+
+function buildScore(result: VeriScoreAgentResult): AgentScore {
+  return {
+    total: result.totalClaims,
+    supported: result.supportedCount,
+    inconclusive: result.totalClaims - result.supportedCount,
+    precision: Math.round(result.precision * 1000) / 1000,
+  };
 }
 
 export async function runVerification(
@@ -13,14 +55,30 @@ export async function runVerification(
   agentBResponse: string,
   agentCResponse: string
 ): Promise<VerificationResult> {
-  // Stage 1: Extract verifiable atomic claims from all three responses
-  const extractedClaims = await extractClaims(agentAResponse, agentBResponse, agentCResponse);
+  const vs = await runVeriScore(query, agentAResponse, agentBResponse, agentCResponse);
 
-  // Stage 2: Cross-agent verification — unified comparison
-  const claims = await verifyClaims(query, extractedClaims);
+  const allClaims: ClaimClassification[] = [
+    ...buildClaims(vs.agentA, "A"),
+    ...buildClaims(vs.agentB, "B"),
+    ...buildClaims(vs.agentC, "C"),
+  ];
 
-  // Stage 3: Compute VeriScore (F1@K) per agent
-  const scores = computeScores(claims.allClaims);
+  const scores = {
+    agentA: buildScore(vs.agentA),
+    agentB: buildScore(vs.agentB),
+    agentC: buildScore(vs.agentC),
+  };
 
-  return { claims, scores };
+  // Winner = highest precision, ties broken by more supported claims
+  const agents: { id: AgentId; precision: number; supported: number }[] = [
+    { id: "A", precision: vs.agentA.precision, supported: vs.agentA.supportedCount },
+    { id: "B", precision: vs.agentB.precision, supported: vs.agentB.supportedCount },
+    { id: "C", precision: vs.agentC.precision, supported: vs.agentC.supportedCount },
+  ];
+  agents.sort((a, b) => b.precision - a.precision || b.supported - a.supported);
+
+  return {
+    claims: { allClaims, winner: agents[0].id },
+    scores,
+  };
 }

@@ -197,7 +197,7 @@ export async function POST(request: NextRequest) {
         });
 
         // Step 3: Verify
-        send("step", { message: "Extracting verifiable claims from all responses..." });
+        send("step", { message: "Sending responses to VeriScore VM for claim extraction (this may take a few minutes)..." });
 
         const verification = await runVerification(
           query,
@@ -207,12 +207,11 @@ export async function POST(request: NextRequest) {
         );
 
         const totalClaims = verification.claims.allClaims.length;
-        const novelCount = verification.claims.novelInsights.length;
         send("step", {
-          message: `Verification complete: ${totalClaims} claims classified, ${novelCount} novel insights found`,
+          message: `VeriScore complete: ${totalClaims} claims verified across all agents`,
         });
         send("step", {
-          message: `VeriScore — Agent A: ${Math.round(verification.scores.agentA.veriScore * 100)}% | Agent B: ${Math.round(verification.scores.agentB.veriScore * 100)}% | Agent C: ${Math.round(verification.scores.agentC.veriScore * 100)}%`,
+          message: `Precision — Agent A: ${Math.round(verification.scores.agentA.precision * 100)}% | Agent B: ${Math.round(verification.scores.agentB.precision * 100)}% | Agent C: ${Math.round(verification.scores.agentC.precision * 100)}%`,
         });
 
         const winner = verification.claims.winner;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, useLayoutEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 type AgentId = "A" | "B" | "C";
 
@@ -12,20 +12,15 @@ const AGENT_NAMES: Record<AgentId, string> = {
 
 interface ClaimClassification {
   claim: string;
-  originalText: string;
   source: AgentId;
-  status: "supported" | "contradicted" | "inconclusive" | "novel";
+  status: "supported" | "inconclusive";
 }
 
 interface AgentScore {
   total: number;
   supported: number;
-  contradicted: number;
   inconclusive: number;
-  novel: number;
   precision: number;
-  recallAtK: number;
-  veriScore: number;
 }
 
 interface WalletInfo {
@@ -39,13 +34,9 @@ interface QueryResult {
   verification: {
     claims: {
       allClaims: ClaimClassification[];
-      consensusInsights: string[];
-      novelInsights: { agent: AgentId; insight: string }[];
-      bestNovelInsight: { agent: AgentId; insight: string; reasoning: string };
       winner: AgentId;
     };
     scores: {
-      K: number;
       agentA: AgentScore;
       agentB: AgentScore;
       agentC: AgentScore;
@@ -94,49 +85,24 @@ interface SecurityEvent {
 function statusColor(status: string) {
   switch (status) {
     case "supported":
-      return "bg-green-100 dark:bg-green-900/30";
-    case "contradicted":
-      return "bg-red-100 dark:bg-red-900/30";
+      return "bg-green-50 text-green-800";
     case "inconclusive":
-      return "bg-yellow-100 dark:bg-yellow-900/30";
-    case "novel":
-      return "border-l-4 border-green-500 bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400";
+      return "bg-amber-50 text-amber-800";
     default:
       return "";
   }
 }
 
-function buildSegments(content: string, claims: ClaimClassification[]): { text: string; status?: string }[] {
-  if (!claims.length) return [{ text: content }];
-
-  const segments: { text: string; status?: string }[] = [];
-  let remaining = content;
-
-  const sortedClaims = [...claims].sort((a, b) => {
-    const posA = content.indexOf(a.originalText);
-    const posB = content.indexOf(b.originalText);
-    return posA - posB;
-  });
-
-  for (const claim of sortedClaims) {
-    const idx = remaining.indexOf(claim.originalText);
-    if (idx === -1) continue;
-    if (idx > 0) segments.push({ text: remaining.slice(0, idx) });
-    segments.push({ text: claim.originalText, status: claim.status });
-    remaining = remaining.slice(idx + claim.originalText.length);
-  }
-
-  if (remaining) segments.push({ text: remaining });
-  return segments.length > 0 ? segments : [{ text: content }];
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^[-*]\s+/gm, "- ");
 }
 
-function StreamingResponse({
-  content,
-  claims,
-}: {
-  content: string;
-  claims: ClaimClassification[];
-}) {
+function StreamingResponse({ content: raw }: { content: string }) {
+  const content = stripMarkdown(raw);
   const [revealed, setRevealed] = useState(0);
 
   useEffect(() => {
@@ -147,7 +113,6 @@ function StreamingResponse({
     let current = 0;
 
     function tick() {
-      // Advance ~4 words per frame for a natural flow
       for (let w = 0; w < 4; w++) {
         const next = content.indexOf(" ", current + 1);
         current = next === -1 ? content.length : next + 1;
@@ -164,79 +129,76 @@ function StreamingResponse({
   }, [content]);
 
   const done = revealed >= content.length;
-  const segments = buildSegments(content, claims);
+  const visText = content.slice(0, revealed);
 
-  let charsLeft = revealed;
   return (
-    <div className="text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap">
-      {segments.map((seg, i) => {
-        if (charsLeft <= 0) return null;
-        const visLen = Math.min(seg.text.length, charsLeft);
-        charsLeft -= visLen;
-        const visText = seg.text.slice(0, visLen);
-
-        return seg.status ? (
-          <span key={i} className={`inline rounded px-1 py-0.5 ${statusColor(seg.status)}`}>
-            {visText}
-          </span>
-        ) : (
-          <span key={i}>{visText}</span>
-        );
-      })}
-      {!done && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-zinc-500 align-text-bottom dark:bg-zinc-400" />}
+    <div className="text-stone-700 whitespace-pre-wrap">
+      {visText}
+      {!done && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-stone-400 align-text-bottom" />}
     </div>
   );
 }
 
-function ScoreCard({ label, score }: { label: string; score: AgentScore }) {
-  const pct = Math.round(score.veriScore * 100);
+function ScoreCard({ label, score, isWinner }: { label: string; score: AgentScore; isWinner: boolean }) {
+  const pct = Math.round(score.precision * 100);
   return (
-    <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-      <h3 className="mb-2 text-sm font-semibold text-zinc-500 dark:text-zinc-400">{label}</h3>
-      <div className="mb-3 text-3xl font-bold text-zinc-900 dark:text-zinc-50">{pct}%</div>
-      <div className="space-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+    <div className={`rounded-lg border p-4 ${isWinner ? "border-amber-500 bg-amber-50" : "border-stone-200 bg-white"}`}>
+      <h3 className="mb-2 text-sm font-semibold text-stone-500">{label}</h3>
+      <div className={`mb-3 text-3xl font-bold ${isWinner ? "text-amber-700" : "text-stone-900"}`}>
+        {pct}%
+        {isWinner && <span className="ml-2 text-sm font-normal text-amber-600">WINNER</span>}
+      </div>
+      <div className="space-y-1.5 text-xs text-stone-500">
         <div className="flex justify-between">
           <span>Total claims</span>
-          <span className="font-mono">{score.total}</span>
+          <span className="font-mono text-stone-800">{score.total}</span>
         </div>
         <div className="flex justify-between">
           <span className="text-green-600">Supported</span>
-          <span className="font-mono">{score.supported}</span>
+          <span className="font-mono text-green-700">{score.supported}</span>
         </div>
         <div className="flex justify-between">
-          <span className="text-red-600">Contradicted</span>
-          <span className="font-mono">{score.contradicted}</span>
+          <span className="text-amber-600">Inconclusive</span>
+          <span className="font-mono text-amber-700">{score.inconclusive}</span>
         </div>
-        <div className="flex justify-between">
-          <span className="text-yellow-600">Inconclusive</span>
-          <span className="font-mono">{score.inconclusive}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-green-500">Novel</span>
-          <span className="font-mono">{score.novel}</span>
-        </div>
-        <hr className="border-zinc-200 dark:border-zinc-700" />
-        <div className="flex justify-between">
-          <span>Precision</span>
-          <span className="font-mono">{score.precision}</span>
-        </div>
-        <div className="flex justify-between">
-          <span>Recall@K</span>
-          <span className="font-mono">{score.recallAtK}</span>
+        <hr className="border-stone-200" />
+        <div className="flex justify-between font-medium">
+          <span className="text-stone-700">Precision</span>
+          <span className="font-mono text-stone-900">{(score.precision * 100).toFixed(1)}%</span>
         </div>
       </div>
     </div>
   );
 }
 
+function ClaimsList({ claims }: { claims: ClaimClassification[] }) {
+  if (claims.length === 0) return null;
+
+  return (
+    <div className="mt-3 space-y-1.5 border-t border-stone-200 pt-3">
+      <h4 className="text-xs font-semibold uppercase tracking-wider text-stone-500">Verified Claims</h4>
+      {claims.map((c, i) => (
+        <div key={i} className={`rounded px-2 py-1.5 text-xs ${statusColor(c.status)}`}>
+          <span className={`mr-1.5 inline-block rounded px-1 py-0.5 text-[10px] font-bold uppercase ${
+            c.status === "supported" ? "bg-green-600 text-white" : "bg-amber-500 text-white"
+          }`}>
+            {c.status}
+          </span>
+          {c.claim}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TxLink({ hash }: { hash?: string }) {
-  if (!hash) return <span className="text-zinc-400">-</span>;
+  if (!hash) return <span className="text-stone-400">-</span>;
   return (
     <a
       href={`${EXPLORER}/tx/${hash}`}
       target="_blank"
       rel="noopener noreferrer"
-      className="font-mono text-xs text-blue-600 underline dark:text-blue-400"
+      className="font-mono text-xs text-blue-600 underline"
     >
       {hash.slice(0, 10)}...{hash.slice(-6)}
     </a>
@@ -259,22 +221,22 @@ function WalletPanel({ wallets }: { wallets: Record<string, WalletInfo | { error
         const data = wallets[key];
         if (!data || "error" in data) {
           return (
-            <div key={key} className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
-              <h3 className="text-xs font-semibold text-zinc-500">{label}</h3>
+            <div key={key} className="rounded-lg border border-stone-200 bg-white p-3">
+              <h3 className="text-xs font-semibold text-stone-500">{label}</h3>
               <p className="mt-1 text-xs text-red-500">{(data as { error: string })?.error || "Not configured"}</p>
             </div>
           );
         }
         const info = data as WalletInfo;
         return (
-          <div key={key} className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
-            <h3 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400">{label}</h3>
-            <p className="mt-1 font-mono text-xs text-zinc-600 dark:text-zinc-400 truncate" title={info.aaWallet}>
+          <div key={key} className="rounded-lg border border-stone-200 bg-white p-3">
+            <h3 className="text-xs font-semibold text-stone-500">{label}</h3>
+            <p className="mt-1 font-mono text-xs text-stone-600 truncate" title={info.aaWallet}>
               {info.aaWallet}
             </p>
             <div className="mt-2 flex gap-3 text-xs">
-              <span className="text-zinc-500">{parseFloat(info.balance.kite).toFixed(4)} KITE</span>
-              <span className="text-emerald-500">{parseFloat(info.balance.usdt).toFixed(2)} USDT</span>
+              <span className="text-stone-500">{parseFloat(info.balance.kite).toFixed(4)} KITE</span>
+              <span className="text-emerald-600">{parseFloat(info.balance.usdt).toFixed(2)} USDT</span>
             </div>
           </div>
         );
@@ -292,10 +254,10 @@ const PHASE_LABELS: Record<string, string> = {
 const PHASE_ORDER = ["spending_cap", "balance_check", "escrow"] as const;
 
 function StatusIcon({ status }: { status: string }) {
-  if (status === "checking") return <div className="h-3 w-3 animate-spin rounded-full border-2 border-yellow-400 border-t-transparent" />;
-  if (status === "passed") return <span className="text-green-400 text-sm">&#10003;</span>;
-  if (status === "blocked") return <span className="text-red-400 text-sm">&#10007;</span>;
-  return <div className="h-3 w-3 rounded-full bg-zinc-600" />;
+  if (status === "checking") return <div className="h-3 w-3 animate-spin rounded-full border-2 border-amber-500 border-t-transparent" />;
+  if (status === "passed") return <span className="text-green-600 text-sm">&#10003;</span>;
+  if (status === "blocked") return <span className="text-red-500 text-sm">&#10007;</span>;
+  return <div className="h-3 w-3 rounded-full bg-stone-300" />;
 }
 
 function SpendingBar({ agent, data }: { agent: string; data: SpendingAgent }) {
@@ -304,16 +266,16 @@ function SpendingBar({ agent, data }: { agent: string; data: SpendingAgent }) {
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-xs">
-        <span className="text-zinc-400">Agent {agent}</span>
-        <span className="font-mono text-zinc-300">{data.spent.toFixed(4)} / {data.cap} KITE</span>
+        <span className="text-stone-500">Agent {agent}</span>
+        <span className="font-mono text-stone-700">{data.spent.toFixed(4)} / {data.cap} KITE</span>
       </div>
-      <div className="h-2 w-full rounded-full bg-zinc-700">
+      <div className="h-2 w-full rounded-full bg-stone-200">
         <div
           className={`h-2 rounded-full transition-all duration-500 ${barColor}`}
           style={{ width: `${pct}%` }}
         />
       </div>
-      <div className="flex justify-between text-[10px] text-zinc-500">
+      <div className="flex justify-between text-[10px] text-stone-400">
         <span>{pct.toFixed(1)}% used</span>
         <span>{data.remaining.toFixed(4)} remaining</span>
       </div>
@@ -321,54 +283,53 @@ function SpendingBar({ agent, data }: { agent: string; data: SpendingAgent }) {
   );
 }
 
-function SecurityPanel({ events }: { events: SecurityEvent[] }) {
+function SecurityPanel({ events, transactions }: {
+  events: SecurityEvent[];
+  transactions?: QueryResult["transactions"];
+}) {
   if (events.length === 0) return null;
 
-  // Get the latest event per phase
   const latestByPhase: Record<string, SecurityEvent> = {};
   for (const e of events) {
     latestByPhase[e.phase] = e;
   }
 
-  // Get the most recent spending state
   const latestEvent = events[events.length - 1];
   const spending = latestEvent.spending;
 
   return (
-    <div className="mb-4 rounded-lg border border-zinc-700 bg-zinc-900 p-4">
+    <div className="mb-4 rounded-lg border border-stone-200 bg-white p-4">
       <div className="mb-3 flex items-center gap-2">
-        <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">x402 Security</span>
+        <span className="text-xs font-semibold uppercase tracking-wider text-stone-500">x402 Security</span>
       </div>
 
-      {/* Spending bars */}
       <div className="mb-4 grid grid-cols-3 gap-4">
         <SpendingBar agent="A" data={spending.A} />
         <SpendingBar agent="B" data={spending.B} />
         <SpendingBar agent="C" data={spending.C} />
       </div>
 
-      {/* Phase chain */}
       <div className="flex items-center gap-1">
         {PHASE_ORDER.map((phase, i) => {
           const ev = latestByPhase[phase];
           const status = ev?.status || "pending";
           const bgClass =
-            status === "passed" ? "border-green-800 bg-green-950/50" :
-            status === "blocked" ? "border-red-800 bg-red-950/50" :
-            status === "checking" ? "border-yellow-800 bg-yellow-950/50" :
-            "border-zinc-700 bg-zinc-800/50";
+            status === "passed" ? "border-green-300 bg-green-50" :
+            status === "blocked" ? "border-red-300 bg-red-50" :
+            status === "checking" ? "border-amber-300 bg-amber-50" :
+            "border-stone-200 bg-stone-50";
 
           return (
             <div key={phase} className="flex items-center gap-1">
               {i > 0 && (
-                <div className={`h-px w-4 ${status === "passed" ? "bg-green-600" : status === "blocked" ? "bg-red-600" : "bg-zinc-600"}`} />
+                <div className={`h-px w-4 ${status === "passed" ? "bg-green-400" : status === "blocked" ? "bg-red-400" : "bg-stone-300"}`} />
               )}
               <div className={`flex items-center gap-2 rounded-md border px-3 py-2 ${bgClass}`}>
                 <StatusIcon status={status} />
                 <div>
-                  <div className="text-xs font-medium text-zinc-200">{PHASE_LABELS[phase]}</div>
+                  <div className="text-xs font-medium text-stone-800">{PHASE_LABELS[phase]}</div>
                   {ev && (
-                    <div className="text-[10px] text-zinc-400">{ev.message}</div>
+                    <div className="text-[10px] text-stone-500">{ev.message}</div>
                   )}
                 </div>
               </div>
@@ -377,67 +338,86 @@ function SecurityPanel({ events }: { events: SecurityEvent[] }) {
         })}
       </div>
 
-      {/* Balance details if available */}
       {latestByPhase.balance_check?.balances && latestByPhase.balance_check.status === "passed" && (
-        <div className="mt-3 grid grid-cols-3 gap-4 text-xs text-zinc-400">
-          <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
+        <div className="mt-3 grid grid-cols-3 gap-4 text-xs text-stone-500">
+          <div className="flex justify-between rounded bg-stone-50 px-2 py-1">
             <span>Agent A on-chain</span>
-            <span className="font-mono text-zinc-200">{parseFloat(latestByPhase.balance_check.balances.A.kite).toFixed(4)} KITE</span>
+            <span className="font-mono text-stone-800">{parseFloat(latestByPhase.balance_check.balances.A.kite).toFixed(4)} KITE</span>
           </div>
-          <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
+          <div className="flex justify-between rounded bg-stone-50 px-2 py-1">
             <span>Agent B on-chain</span>
-            <span className="font-mono text-zinc-200">{parseFloat(latestByPhase.balance_check.balances.B.kite).toFixed(4)} KITE</span>
+            <span className="font-mono text-stone-800">{parseFloat(latestByPhase.balance_check.balances.B.kite).toFixed(4)} KITE</span>
           </div>
-          <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
+          <div className="flex justify-between rounded bg-stone-50 px-2 py-1">
             <span>Agent C on-chain</span>
-            <span className="font-mono text-zinc-200">{parseFloat(latestByPhase.balance_check.balances.C.kite).toFixed(4)} KITE</span>
+            <span className="font-mono text-stone-800">{parseFloat(latestByPhase.balance_check.balances.C.kite).toFixed(4)} KITE</span>
           </div>
         </div>
       )}
 
-      {/* Escrow tx hashes if available */}
       {latestByPhase.escrow?.escrows && latestByPhase.escrow.status === "passed" && (
-        <div className="mt-2 grid grid-cols-3 gap-4 text-xs text-zinc-400">
+        <div className="mt-2 grid grid-cols-3 gap-4 text-xs text-stone-500">
           {latestByPhase.escrow.escrows.A.transactionHash && (
-            <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
+            <div className="flex justify-between rounded bg-stone-50 px-2 py-1">
               <span>Agent A escrow tx</span>
-              <a
-                href={`${EXPLORER}/tx/${latestByPhase.escrow.escrows.A.transactionHash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-mono text-blue-400 underline"
-              >
+              <a href={`${EXPLORER}/tx/${latestByPhase.escrow.escrows.A.transactionHash}`} target="_blank" rel="noopener noreferrer" className="font-mono text-blue-600 underline">
                 {latestByPhase.escrow.escrows.A.transactionHash.slice(0, 10)}...
               </a>
             </div>
           )}
           {latestByPhase.escrow.escrows.B.transactionHash && (
-            <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
+            <div className="flex justify-between rounded bg-stone-50 px-2 py-1">
               <span>Agent B escrow tx</span>
-              <a
-                href={`${EXPLORER}/tx/${latestByPhase.escrow.escrows.B.transactionHash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-mono text-blue-400 underline"
-              >
+              <a href={`${EXPLORER}/tx/${latestByPhase.escrow.escrows.B.transactionHash}`} target="_blank" rel="noopener noreferrer" className="font-mono text-blue-600 underline">
                 {latestByPhase.escrow.escrows.B.transactionHash.slice(0, 10)}...
               </a>
             </div>
           )}
           {latestByPhase.escrow.escrows.C.transactionHash && (
-            <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
+            <div className="flex justify-between rounded bg-stone-50 px-2 py-1">
               <span>Agent C escrow tx</span>
-              <a
-                href={`${EXPLORER}/tx/${latestByPhase.escrow.escrows.C.transactionHash}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-mono text-blue-400 underline"
-              >
+              <a href={`${EXPLORER}/tx/${latestByPhase.escrow.escrows.C.transactionHash}`} target="_blank" rel="noopener noreferrer" className="font-mono text-blue-600 underline">
                 {latestByPhase.escrow.escrows.C.transactionHash.slice(0, 10)}...
               </a>
             </div>
           )}
         </div>
+      )}
+
+      {transactions && (
+        <>
+          <hr className="my-4 border-stone-200" />
+          <div className="mb-3 flex items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wider text-stone-500">Kite Transactions</span>
+          </div>
+          <div className="space-y-2 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-stone-600">Agent A Escrow</span>
+              <TxLink hash={transactions.escrowA.transactionHash} />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-stone-600">Agent B Escrow</span>
+              <TxLink hash={transactions.escrowB.transactionHash} />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-stone-600">Agent C Escrow</span>
+              <TxLink hash={transactions.escrowC.transactionHash} />
+            </div>
+            {transactions.reward && (
+              <>
+                <hr className="border-stone-200" />
+                <div className="flex items-center justify-between">
+                  <span className="text-stone-600">Winner Reward ({transactions.reward.winnerAmount} KITE)</span>
+                  <TxLink hash={transactions.reward.winnerTx.transactionHash} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-stone-600">Verifier Cut ({transactions.reward.verifierCut} KITE)</span>
+                  <span className="text-xs text-stone-400">retained</span>
+                </div>
+              </>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
@@ -454,13 +434,13 @@ function Overlay({ children, onClose, wide }: { children: React.ReactNode; onClo
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className={`relative max-h-[85vh] w-full overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-6 shadow-2xl ${wide ? "max-w-5xl" : "max-w-3xl"}`}>
+      <div className={`relative max-h-[85vh] w-full overflow-y-auto rounded-xl border border-stone-200 bg-white p-6 shadow-2xl ${wide ? "max-w-5xl" : "max-w-3xl"}`}>
         <button
           onClick={onClose}
-          className="absolute right-3 top-3 rounded-md p-1 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+          className="absolute right-3 top-3 rounded-md p-1 text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -474,11 +454,7 @@ const LEFT_MIN = 320;
 const LEFT_MAX = 600;
 const LEFT_DEFAULT = 420;
 
-function DragHandle({
-  onDrag,
-}: {
-  onDrag: (deltaX: number) => void;
-}) {
+function DragHandle({ onDrag }: { onDrag: (deltaX: number) => void }) {
   const dragging = useRef(false);
   const lastX = useRef(0);
 
@@ -513,7 +489,7 @@ function DragHandle({
         document.body.style.userSelect = "none";
       }}
     >
-      <div className="h-8 w-1 rounded-full bg-zinc-300 transition-colors group-hover:bg-zinc-500 dark:bg-zinc-700 dark:group-hover:bg-zinc-500" />
+      <div className="h-8 w-1 rounded-full bg-stone-300 transition-colors group-hover:bg-stone-500" />
     </div>
   );
 }
@@ -529,7 +505,7 @@ export default function Home() {
   const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT);
-  const [overlay, setOverlay] = useState<"security" | "transactions" | null>(null);
+  const [overlay, setOverlay] = useState<"security" | null>(null);
 
   const handleDrag = useCallback((deltaX: number) => {
     setLeftWidth((w) => Math.min(LEFT_MAX, Math.max(LEFT_MIN, w + deltaX)));
@@ -554,7 +530,6 @@ export default function Home() {
     fetchWallets();
   }, [fetchWallets]);
 
-  // Auto-scroll when new content appears
   useEffect(() => {
     scrollToBottom();
   }, [steps, securityEvents, result, error, submittedQuery, scrollToBottom]);
@@ -629,37 +604,33 @@ export default function Home() {
   const agentBClaims = result?.verification.claims.allClaims.filter((c) => c.source === "B") || [];
   const agentCClaims = result?.verification.claims.allClaims.filter((c) => c.source === "C") || [];
 
+  const winner = result?.verification.claims.winner;
   const hasActivity = !!(submittedQuery || loading || result || error);
 
   return (
-    <div className="flex h-screen flex-col bg-zinc-50 font-sans dark:bg-black">
-      {/* Scrollable content area */}
+    <div className="flex h-screen flex-col bg-[#FAFAF5] font-sans">
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        {/* Narrow centered column for idle state + processing */}
         <div className="mx-auto w-full max-w-4xl px-4 py-6">
-          {/* Header + wallets — only when idle */}
           {!hasActivity && (
             <div className="flex min-h-[60vh] flex-col items-center justify-center">
-              <h1 className="mb-1 text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
+              <h1 className="mb-1 text-3xl font-bold tracking-tight text-stone-900">
                 Sniper
               </h1>
-              <p className="mb-8 text-zinc-500 dark:text-zinc-400">
+              <p className="mb-8 text-stone-500">
                 Multi-model AI orchestrator with VeriScore verification and Kite escrow
               </p>
               <WalletPanel wallets={wallets} />
             </div>
           )}
 
-          {/* User query bubble */}
           {submittedQuery && (
             <div className="mb-4 flex justify-end">
-              <div className="max-w-[70%] rounded-2xl rounded-br-md bg-zinc-900 px-4 py-3 text-sm text-zinc-100 dark:bg-zinc-800">
+              <div className="max-w-[70%] rounded-2xl rounded-br-md bg-stone-900 px-4 py-3 text-sm text-white">
                 {submittedQuery}
               </div>
             </div>
           )}
 
-          {/* Processing state — stays in narrow column */}
           {(loading || (!result && (securityEvents.length > 0 || steps.length > 0 || error))) && (
             <div className="mb-4">
               {securityEvents.length > 0 && (
@@ -667,31 +638,31 @@ export default function Home() {
               )}
 
               {(loading || steps.length > 0) && (
-                <div className="mb-4 rounded-lg border border-zinc-200 bg-zinc-900 p-4 font-mono text-sm dark:border-zinc-700">
+                <div className="mb-4 rounded-lg border border-stone-200 bg-white p-4 font-mono text-sm">
                   <div className="mb-2 flex items-center gap-2">
-                    <div className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
-                    <span className="text-xs font-semibold uppercase tracking-wider text-green-400">Live</span>
+                    <div className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
+                    <span className="text-xs font-semibold uppercase tracking-wider text-amber-600">Live</span>
                   </div>
                   <div className="max-h-48 space-y-1 overflow-y-auto">
                     {steps.map((step, i) => (
                       <div key={i} className="flex gap-2 text-xs">
-                        <span className="shrink-0 text-zinc-500">[{i + 1}]</span>
+                        <span className="shrink-0 text-stone-400">[{i + 1}]</span>
                         <span className={
                           step.includes("failed") || step.includes("error")
-                            ? "text-red-400"
+                            ? "text-red-600"
                             : step.includes("escrowed") || step.includes("rewarded") || step.includes("Winner")
-                              ? "text-green-400"
-                              : step.includes("VeriScore")
-                                ? "text-yellow-400"
-                                : "text-zinc-300"
+                              ? "text-green-600"
+                              : step.includes("VeriScore") || step.includes("Precision")
+                                ? "text-amber-600"
+                                : "text-stone-700"
                         }>
                           {step}
                         </span>
                       </div>
                     ))}
                     {loading && (
-                      <div className="flex items-center gap-2 text-xs text-zinc-500">
-                        <div className="h-3 w-3 animate-spin rounded-full border border-zinc-600 border-t-zinc-300" />
+                      <div className="flex items-center gap-2 text-xs text-stone-400">
+                        <div className="h-3 w-3 animate-spin rounded-full border border-stone-300 border-t-stone-600" />
                         <span>Processing...</span>
                       </div>
                     )}
@@ -700,7 +671,7 @@ export default function Home() {
               )}
 
               {error && (
-                <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
+                <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-red-700">
                   {error}
                 </div>
               )}
@@ -708,117 +679,74 @@ export default function Home() {
           )}
         </div>
 
-        {/* Full-width results layout — left sidebar (security/tx) | drag handle | right (main content) */}
         {result && (
           <div className="w-full px-4 pb-6">
             {error && (
-              <div className="mx-auto mb-4 max-w-4xl rounded-lg border border-red-200 bg-red-50 p-4 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
+              <div className="mx-auto mb-4 max-w-4xl rounded-lg border border-red-200 bg-red-50 p-4 text-red-700">
                 {error}
               </div>
             )}
 
             <div className="flex">
-              {/* Left sidebar — x402 Security + Kite Transactions + VeriScores */}
+              {/* Left sidebar */}
               <div className="hidden shrink-0 xl:block overflow-y-auto pr-1" style={{ width: leftWidth }}>
                 <div className="sticky top-6 space-y-4">
                   {securityEvents.length > 0 && (
                     <div
-                      className="cursor-pointer rounded-lg ring-zinc-600 transition-all hover:ring-2"
+                      className="cursor-pointer rounded-lg ring-stone-300 transition-all hover:ring-2"
                       onClick={() => setOverlay("security")}
                       title="Click to expand"
                     >
-                      <SecurityPanel events={securityEvents} />
+                      <SecurityPanel events={securityEvents} transactions={result.transactions} />
                     </div>
                   )}
 
-                  <div
-                    className="cursor-pointer rounded-lg border border-zinc-200 bg-white p-4 ring-zinc-600 transition-all hover:ring-2 dark:border-zinc-800 dark:bg-zinc-900"
-                    onClick={() => setOverlay("transactions")}
-                    title="Click to expand"
-                  >
-                    <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                      Kite Transactions
-                    </h3>
-                    <div className="space-y-2 text-sm">
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-600 dark:text-zinc-400">Agent A Escrow</span>
-                        <TxLink hash={result.transactions.escrowA.transactionHash} />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-600 dark:text-zinc-400">Agent B Escrow</span>
-                        <TxLink hash={result.transactions.escrowB.transactionHash} />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-600 dark:text-zinc-400">Agent C Escrow</span>
-                        <TxLink hash={result.transactions.escrowC.transactionHash} />
-                      </div>
-                      {result.transactions.reward && (
-                        <>
-                          <hr className="border-zinc-200 dark:border-zinc-700" />
-                          <div className="flex items-center justify-between">
-                            <span className="text-zinc-600 dark:text-zinc-400">Winner Reward ({result.transactions.reward.winnerAmount} KITE)</span>
-                            <TxLink hash={result.transactions.reward.winnerTx.transactionHash} />
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-zinc-600 dark:text-zinc-400">Verifier Cut ({result.transactions.reward.verifierCut} KITE)</span>
-                            <span className="text-xs text-zinc-400">retained</span>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  <ScoreCard label="Agent A — OpenAI" score={result.verification.scores.agentA} />
-                  <ScoreCard label="Agent B — Gemini" score={result.verification.scores.agentB} />
-                  <ScoreCard label="Agent C — Claude" score={result.verification.scores.agentC} />
+                  <ScoreCard label="Agent A — OpenAI" score={result.verification.scores.agentA} isWinner={winner === "A"} />
+                  <ScoreCard label="Agent B — Gemini" score={result.verification.scores.agentB} isWinner={winner === "B"} />
+                  <ScoreCard label="Agent C — Claude" score={result.verification.scores.agentC} isWinner={winner === "C"} />
                 </div>
               </div>
 
-              {/* Drag handle — visible on xl+ */}
               <div className="hidden xl:flex">
                 <DragHandle onDrag={handleDrag} />
               </div>
 
               {/* Right — main content */}
               <div className="min-w-0 flex-1 space-y-5 pl-1">
-                {/* VeriScore Cards — visible on smaller screens where left sidebar is hidden */}
+                {/* Score cards for mobile */}
                 <div className="grid grid-cols-3 gap-4 xl:hidden">
-                  <ScoreCard label="Agent A — OpenAI" score={result.verification.scores.agentA} />
-                  <ScoreCard label="Agent B — Gemini" score={result.verification.scores.agentB} />
-                  <ScoreCard label="Agent C — Claude" score={result.verification.scores.agentC} />
+                  <ScoreCard label="Agent A — OpenAI" score={result.verification.scores.agentA} isWinner={winner === "A"} />
+                  <ScoreCard label="Agent B — Gemini" score={result.verification.scores.agentB} isWinner={winner === "B"} />
+                  <ScoreCard label="Agent C — Claude" score={result.verification.scores.agentC} isWinner={winner === "C"} />
                 </div>
 
                 {/* Winner */}
-                <div className="rounded-lg border-2 border-green-300 bg-green-50 p-4 dark:border-green-800 dark:bg-green-950">
-                  <span className="text-lg font-bold text-green-700 dark:text-green-400">
-                    Winner: Agent {result.verification.claims.winner} ({AGENT_NAMES[result.verification.claims.winner]})
+                <div className="rounded-lg border-2 border-amber-400 bg-amber-50 p-4">
+                  <span className="text-lg font-bold text-amber-800">
+                    Winner: Agent {winner} ({winner ? AGENT_NAMES[winner] : "?"})
                   </span>
-                  <p className="mt-2 text-sm text-green-800 dark:text-green-300">
-                    <strong>Best novel insight:</strong> {result.verification.claims.bestNovelInsight.insight}
-                  </p>
-                  <p className="mt-1 text-xs text-green-600 dark:text-green-500">
-                    {result.verification.claims.bestNovelInsight.reasoning}
+                  <div className="mt-2 flex gap-4 text-sm text-amber-700">
+                    <span>A: {Math.round(result.verification.scores.agentA.precision * 100)}%</span>
+                    <span>B: {Math.round(result.verification.scores.agentB.precision * 100)}%</span>
+                    <span>C: {Math.round(result.verification.scores.agentC.precision * 100)}%</span>
+                  </div>
+                  <p className="mt-1 text-xs text-amber-600">
+                    Winner determined by highest VeriScore precision (web-verified claim accuracy)
                   </p>
                 </div>
 
                 {/* Agent Responses */}
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
                   {/* Agent A */}
-                  <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-                    <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-                      <h3 className="font-semibold text-zinc-800 dark:text-zinc-200">Agent A — {result.individualResponses.openai.model}</h3>
+                  <div className={`rounded-lg border ${winner === "A" ? "border-amber-500" : "border-stone-200"} bg-white`}>
+                    <div className="border-b border-stone-200 px-4 py-3">
+                      <h3 className="font-semibold text-stone-800">Agent A — {result.individualResponses.openai.model}</h3>
                       <div className="mt-1 flex flex-wrap gap-1.5 text-xs">
-                        <span className="rounded bg-green-200 px-1.5 py-0.5 text-green-800 dark:bg-green-800 dark:text-green-200">
+                        <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700">
                           {agentAClaims.filter((c) => c.status === "supported").length} supported
                         </span>
-                        <span className="rounded bg-red-200 px-1.5 py-0.5 text-red-800 dark:bg-red-800 dark:text-red-200">
-                          {agentAClaims.filter((c) => c.status === "contradicted").length} contradicted
-                        </span>
-                        <span className="rounded bg-yellow-200 px-1.5 py-0.5 text-yellow-800 dark:bg-yellow-800 dark:text-yellow-200">
+                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700">
                           {agentAClaims.filter((c) => c.status === "inconclusive").length} inconclusive
-                        </span>
-                        <span className="rounded bg-green-300 px-1.5 py-0.5 text-green-900 dark:bg-green-700 dark:text-green-100">
-                          {agentAClaims.filter((c) => c.status === "novel").length} novel
                         </span>
                       </div>
                     </div>
@@ -826,27 +754,22 @@ export default function Home() {
                       {result.individualResponses.openai.error ? (
                         <p className="text-red-500">{result.individualResponses.openai.error}</p>
                       ) : (
-                        <StreamingResponse content={result.individualResponses.openai.content} claims={agentAClaims} />
+                        <StreamingResponse content={result.individualResponses.openai.content} />
                       )}
+                      <ClaimsList claims={agentAClaims} />
                     </div>
                   </div>
 
                   {/* Agent B */}
-                  <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-                    <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-                      <h3 className="font-semibold text-zinc-800 dark:text-zinc-200">Agent B — {result.individualResponses.gemini.model}</h3>
+                  <div className={`rounded-lg border ${winner === "B" ? "border-amber-500" : "border-stone-200"} bg-white`}>
+                    <div className="border-b border-stone-200 px-4 py-3">
+                      <h3 className="font-semibold text-stone-800">Agent B — {result.individualResponses.gemini.model}</h3>
                       <div className="mt-1 flex flex-wrap gap-1.5 text-xs">
-                        <span className="rounded bg-green-200 px-1.5 py-0.5 text-green-800 dark:bg-green-800 dark:text-green-200">
+                        <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700">
                           {agentBClaims.filter((c) => c.status === "supported").length} supported
                         </span>
-                        <span className="rounded bg-red-200 px-1.5 py-0.5 text-red-800 dark:bg-red-800 dark:text-red-200">
-                          {agentBClaims.filter((c) => c.status === "contradicted").length} contradicted
-                        </span>
-                        <span className="rounded bg-yellow-200 px-1.5 py-0.5 text-yellow-800 dark:bg-yellow-800 dark:text-yellow-200">
+                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700">
                           {agentBClaims.filter((c) => c.status === "inconclusive").length} inconclusive
-                        </span>
-                        <span className="rounded bg-green-300 px-1.5 py-0.5 text-green-900 dark:bg-green-700 dark:text-green-100">
-                          {agentBClaims.filter((c) => c.status === "novel").length} novel
                         </span>
                       </div>
                     </div>
@@ -854,27 +777,22 @@ export default function Home() {
                       {result.individualResponses.gemini.error ? (
                         <p className="text-red-500">{result.individualResponses.gemini.error}</p>
                       ) : (
-                        <StreamingResponse content={result.individualResponses.gemini.content} claims={agentBClaims} />
+                        <StreamingResponse content={result.individualResponses.gemini.content} />
                       )}
+                      <ClaimsList claims={agentBClaims} />
                     </div>
                   </div>
 
                   {/* Agent C */}
-                  <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-                    <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-                      <h3 className="font-semibold text-zinc-800 dark:text-zinc-200">Agent C — {result.individualResponses.claude.model}</h3>
+                  <div className={`rounded-lg border ${winner === "C" ? "border-amber-500" : "border-stone-200"} bg-white`}>
+                    <div className="border-b border-stone-200 px-4 py-3">
+                      <h3 className="font-semibold text-stone-800">Agent C — {result.individualResponses.claude.model}</h3>
                       <div className="mt-1 flex flex-wrap gap-1.5 text-xs">
-                        <span className="rounded bg-green-200 px-1.5 py-0.5 text-green-800 dark:bg-green-800 dark:text-green-200">
+                        <span className="rounded bg-green-100 px-1.5 py-0.5 text-green-700">
                           {agentCClaims.filter((c) => c.status === "supported").length} supported
                         </span>
-                        <span className="rounded bg-red-200 px-1.5 py-0.5 text-red-800 dark:bg-red-800 dark:text-red-200">
-                          {agentCClaims.filter((c) => c.status === "contradicted").length} contradicted
-                        </span>
-                        <span className="rounded bg-yellow-200 px-1.5 py-0.5 text-yellow-800 dark:bg-yellow-800 dark:text-yellow-200">
+                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700">
                           {agentCClaims.filter((c) => c.status === "inconclusive").length} inconclusive
-                        </span>
-                        <span className="rounded bg-green-300 px-1.5 py-0.5 text-green-900 dark:bg-green-700 dark:text-green-100">
-                          {agentCClaims.filter((c) => c.status === "novel").length} novel
                         </span>
                       </div>
                     </div>
@@ -882,156 +800,50 @@ export default function Home() {
                       {result.individualResponses.claude.error ? (
                         <p className="text-red-500">{result.individualResponses.claude.error}</p>
                       ) : (
-                        <StreamingResponse content={result.individualResponses.claude.content} claims={agentCClaims} />
+                        <StreamingResponse content={result.individualResponses.claude.content} />
                       )}
+                      <ClaimsList claims={agentCClaims} />
                     </div>
                   </div>
                 </div>
 
-                {/* Combined Analysis */}
-                {result.verification.claims.consensusInsights.length > 0 && (
-                  <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                    <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                      Consensus Insights (Multiple Agents Agree)
-                    </h3>
-                    <ul className="space-y-1">
-                      {result.verification.claims.consensusInsights.map((insight, i) => (
-                        <li key={i} className="text-sm text-zinc-700 dark:text-zinc-300">{insight}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {result.verification.claims.novelInsights.length > 0 && (
-                  <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                    <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                      Novel Insights
-                    </h3>
-                    <ul className="space-y-2">
-                      {result.verification.claims.novelInsights.map((n, i) => (
-                        <li key={i} className="rounded border-l-4 border-green-500 bg-green-50 p-2 text-sm text-green-700 dark:bg-green-900/20 dark:text-green-400">
-                          <span className="mr-2 rounded bg-green-200 px-1.5 py-0.5 text-xs font-semibold text-green-800 dark:bg-green-800 dark:text-green-200">
-                            Agent {n.agent}
-                          </span>
-                          {n.insight}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {/* x402 + Kite Transactions — visible on smaller screens below content */}
-                <div className="space-y-4 xl:hidden">
-                  {securityEvents.length > 0 && (
-                    <div
-                      className="cursor-pointer rounded-lg ring-zinc-600 transition-all hover:ring-2"
-                      onClick={() => setOverlay("security")}
-                      title="Click to expand"
-                    >
-                      <SecurityPanel events={securityEvents} />
-                    </div>
-                  )}
+                {/* x402 Security & Kite Transactions — mobile */}
+                {securityEvents.length > 0 && (
                   <div
-                    className="cursor-pointer rounded-lg border border-zinc-200 bg-white p-4 ring-zinc-600 transition-all hover:ring-2 dark:border-zinc-800 dark:bg-zinc-900"
-                    onClick={() => setOverlay("transactions")}
+                    className="cursor-pointer rounded-lg ring-stone-300 transition-all hover:ring-2 xl:hidden"
+                    onClick={() => setOverlay("security")}
                     title="Click to expand"
                   >
-                    <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                      Kite Transactions
-                    </h3>
-                    <div className="space-y-2 text-sm">
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-600 dark:text-zinc-400">Agent A Escrow</span>
-                        <TxLink hash={result.transactions.escrowA.transactionHash} />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-600 dark:text-zinc-400">Agent B Escrow</span>
-                        <TxLink hash={result.transactions.escrowB.transactionHash} />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-600 dark:text-zinc-400">Agent C Escrow</span>
-                        <TxLink hash={result.transactions.escrowC.transactionHash} />
-                      </div>
-                      {result.transactions.reward && (
-                        <>
-                          <hr className="border-zinc-200 dark:border-zinc-700" />
-                          <div className="flex items-center justify-between">
-                            <span className="text-zinc-600 dark:text-zinc-400">Winner Reward ({result.transactions.reward.winnerAmount} KITE)</span>
-                            <TxLink hash={result.transactions.reward.winnerTx.transactionHash} />
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-zinc-600 dark:text-zinc-400">Verifier Cut ({result.transactions.reward.verifierCut} KITE)</span>
-                            <span className="text-xs text-zinc-400">retained</span>
-                          </div>
-                        </>
-                      )}
-                    </div>
+                    <SecurityPanel events={securityEvents} transactions={result.transactions} />
                   </div>
-                </div>
+                )}
               </div>
             </div>
 
-            {/* Security overlay */}
             {overlay === "security" && securityEvents.length > 0 && (
               <Overlay onClose={() => setOverlay(null)} wide>
-                <SecurityPanel events={securityEvents} />
-              </Overlay>
-            )}
-
-            {/* Transactions overlay */}
-            {overlay === "transactions" && (
-              <Overlay onClose={() => setOverlay(null)}>
-                <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-zinc-400">
-                  Kite Transactions
-                </h3>
-                <div className="space-y-3 text-sm">
-                  <div className="flex items-center justify-between rounded bg-zinc-800 px-3 py-2">
-                    <span className="text-zinc-300">Agent A Escrow</span>
-                    <TxLink hash={result.transactions.escrowA.transactionHash} />
-                  </div>
-                  <div className="flex items-center justify-between rounded bg-zinc-800 px-3 py-2">
-                    <span className="text-zinc-300">Agent B Escrow</span>
-                    <TxLink hash={result.transactions.escrowB.transactionHash} />
-                  </div>
-                  <div className="flex items-center justify-between rounded bg-zinc-800 px-3 py-2">
-                    <span className="text-zinc-300">Agent C Escrow</span>
-                    <TxLink hash={result.transactions.escrowC.transactionHash} />
-                  </div>
-                  {result.transactions.reward && (
-                    <>
-                      <hr className="border-zinc-700" />
-                      <div className="flex items-center justify-between rounded bg-zinc-800 px-3 py-2">
-                        <span className="text-zinc-300">Winner Reward ({result.transactions.reward.winnerAmount} KITE)</span>
-                        <TxLink hash={result.transactions.reward.winnerTx.transactionHash} />
-                      </div>
-                      <div className="flex items-center justify-between rounded bg-zinc-800 px-3 py-2">
-                        <span className="text-zinc-300">Verifier Cut ({result.transactions.reward.verifierCut} KITE)</span>
-                        <span className="text-xs text-zinc-400">retained</span>
-                      </div>
-                    </>
-                  )}
-                </div>
+                <SecurityPanel events={securityEvents} transactions={result.transactions} />
               </Overlay>
             )}
           </div>
         )}
       </div>
 
-      {/* Input bar — pinned to bottom */}
-      <div className="shrink-0 border-t border-zinc-200 bg-zinc-50 px-4 py-4 dark:border-zinc-800 dark:bg-black">
+      {/* Input bar */}
+      <div className="shrink-0 border-t border-stone-200 bg-[#FAFAF5] px-4 py-4">
         <form onSubmit={handleSubmit} className="mx-auto flex w-full max-w-4xl gap-3">
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Ask anything..."
-            className="flex-1 rounded-xl border border-zinc-300 bg-white px-4 py-3 text-zinc-900 placeholder-zinc-400 focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500"
+            className="flex-1 rounded-xl border border-stone-300 bg-white px-4 py-3 text-stone-900 placeholder-stone-400 focus:border-stone-500 focus:outline-none"
             disabled={loading}
           />
           <button
             type="submit"
             disabled={loading || !query.trim()}
-            className="rounded-xl bg-zinc-900 px-6 py-3 font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+            className="rounded-xl bg-stone-900 px-6 py-3 font-medium text-white transition-colors hover:bg-stone-700 disabled:opacity-50"
           >
             {loading ? "Processing..." : "Ask"}
           </button>
