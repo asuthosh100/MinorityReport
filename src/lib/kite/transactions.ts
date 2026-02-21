@@ -1,7 +1,7 @@
 import { ethers } from "ethers";
 import { getSDK, getEOA, getAAWalletAddress, getSignFunction } from "./wallets";
 import {
-  STAKE_AMOUNT,
+  ESCROW_AMOUNT,
   VERIFIER_CUT_PERCENT,
   SETTLEMENT_TOKEN,
 } from "./config";
@@ -54,22 +54,22 @@ async function transferKite(
 }
 
 /**
- * Stake KITE from an agent to the verifier's AA wallet (acting as escrow).
+ * Escrow KITE from an agent to the verifier's AA wallet.
  */
-export async function stakeFromAgent(
+export async function escrowFromAgent(
   agent: "A" | "B"
 ): Promise<TransactionResult> {
   const verifierWallet = getAAWalletAddress("verifier");
-  return transferKite(agent, verifierWallet, STAKE_AMOUNT);
+  return transferKite(agent, verifierWallet, ESCROW_AMOUNT);
 }
 
 /**
- * Distribute the staked pool: winner gets 90%, verifier keeps 10%.
+ * Distribute the escrow pool: winner gets 90%, verifier keeps 10%.
  */
 export async function distributeRewards(
   winner: "A" | "B"
 ): Promise<{ winnerTx: TransactionResult; verifierCut: string; winnerAmount: string }> {
-  const totalPool = parseFloat(STAKE_AMOUNT) * 2;
+  const totalPool = parseFloat(ESCROW_AMOUNT) * 2;
   const verifierCut = (totalPool * VERIFIER_CUT_PERCENT) / 100;
   const winnerAmount = totalPool - verifierCut;
 

@@ -1,10 +1,10 @@
 import { runVerification, type VerificationResult } from "@/lib/verifier/claude";
-import { stakeFromAgent, distributeRewards, type TransactionResult } from "@/lib/kite/transactions";
+import { escrowFromAgent, distributeRewards, type TransactionResult } from "@/lib/kite/transactions";
 import type { InputOrchestratorResult } from "./input";
 
 export interface TransactionInfo {
-  stakeA: TransactionResult;
-  stakeB: TransactionResult;
+  escrowA: TransactionResult;
+  escrowB: TransactionResult;
   reward: {
     winnerTx: TransactionResult;
     verifierCut: string;
@@ -22,20 +22,20 @@ export async function outputOrchestrator(
   query: string,
   responses: InputOrchestratorResult
 ): Promise<OutputOrchestratorResult> {
-  // Step 1: Stake from both agents in parallel
-  const [stakeA, stakeB] = await Promise.allSettled([
-    stakeFromAgent("A"),
-    stakeFromAgent("B"),
+  // Step 1: Escrow from both agents in parallel
+  const [escrowA, escrowB] = await Promise.allSettled([
+    escrowFromAgent("A"),
+    escrowFromAgent("B"),
   ]);
 
-  const stakeAResult: TransactionResult =
-    stakeA.status === "fulfilled"
-      ? stakeA.value
-      : { success: false, error: String(stakeA.reason) };
-  const stakeBResult: TransactionResult =
-    stakeB.status === "fulfilled"
-      ? stakeB.value
-      : { success: false, error: String(stakeB.reason) };
+  const escrowAResult: TransactionResult =
+    escrowA.status === "fulfilled"
+      ? escrowA.value
+      : { success: false, error: String(escrowA.reason) };
+  const escrowBResult: TransactionResult =
+    escrowB.status === "fulfilled"
+      ? escrowB.value
+      : { success: false, error: String(escrowB.reason) };
 
   // Step 2: Run VeriScore verification pipeline
   const verification = await runVerification(
@@ -59,8 +59,8 @@ export async function outputOrchestrator(
   return {
     verification,
     transactions: {
-      stakeA: stakeAResult,
-      stakeB: stakeBResult,
+      escrowA: escrowAResult,
+      escrowB: escrowBResult,
       reward,
     },
     individualResponses: responses,

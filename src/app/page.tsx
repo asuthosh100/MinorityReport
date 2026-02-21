@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 interface ClaimClassification {
   claim: string;
@@ -43,8 +43,8 @@ interface QueryResult {
     };
   };
   transactions: {
-    stakeA: { success: boolean; transactionHash?: string; error?: string };
-    stakeB: { success: boolean; transactionHash?: string; error?: string };
+    escrowA: { success: boolean; transactionHash?: string; error?: string };
+    escrowB: { success: boolean; transactionHash?: string; error?: string };
     reward: {
       winnerTx: { success: boolean; transactionHash?: string; error?: string };
       verifierCut: string;
@@ -58,6 +58,26 @@ interface QueryResult {
 }
 
 const EXPLORER = "https://testnet.kitescan.ai";
+
+interface SpendingAgent {
+  agent: "A" | "B";
+  spent: number;
+  cap: number;
+  remaining: number;
+  percent: number;
+}
+
+interface SecurityEvent {
+  phase: "spending_cap" | "balance_check" | "escrow";
+  status: "checking" | "passed" | "blocked";
+  message: string;
+  spending: { A: SpendingAgent; B: SpendingAgent };
+  balances?: { A: { kite: string; usdt: string }; B: { kite: string; usdt: string } };
+  escrows?: {
+    A: { success: boolean; transactionHash?: string; error?: string };
+    B: { success: boolean; transactionHash?: string; error?: string };
+  };
+}
 
 function statusColor(status: string) {
   switch (status) {
@@ -74,32 +94,12 @@ function statusColor(status: string) {
   }
 }
 
-function statusBadge(status: string) {
-  const colors: Record<string, string> = {
-    supported: "bg-green-200 text-green-800 dark:bg-green-800 dark:text-green-200",
-    contradicted: "bg-red-200 text-red-800 dark:bg-red-800 dark:text-red-200",
-    inconclusive: "bg-yellow-200 text-yellow-800 dark:bg-yellow-800 dark:text-yellow-200",
-    novel: "bg-green-300 text-green-900 dark:bg-green-700 dark:text-green-100",
-  };
-  return colors[status] || "";
-}
+function buildSegments(content: string, claims: ClaimClassification[]): { text: string; status?: string }[] {
+  if (!claims.length) return [{ text: content }];
 
-function HighlightedResponse({
-  content,
-  claims,
-}: {
-  content: string;
-  claims: ClaimClassification[];
-}) {
-  if (!claims.length) {
-    return <p className="text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap">{content}</p>;
-  }
-
-  // Build segments: for each claim, find its originalText in the content and wrap it
   const segments: { text: string; status?: string }[] = [];
   let remaining = content;
 
-  // Sort claims by their position in the text
   const sortedClaims = [...claims].sort((a, b) => {
     const posA = content.indexOf(a.originalText);
     const posB = content.indexOf(b.originalText);
@@ -109,34 +109,69 @@ function HighlightedResponse({
   for (const claim of sortedClaims) {
     const idx = remaining.indexOf(claim.originalText);
     if (idx === -1) continue;
-
-    if (idx > 0) {
-      segments.push({ text: remaining.slice(0, idx) });
-    }
+    if (idx > 0) segments.push({ text: remaining.slice(0, idx) });
     segments.push({ text: claim.originalText, status: claim.status });
     remaining = remaining.slice(idx + claim.originalText.length);
   }
 
-  if (remaining) {
-    segments.push({ text: remaining });
-  }
+  if (remaining) segments.push({ text: remaining });
+  return segments.length > 0 ? segments : [{ text: content }];
+}
 
-  // If no segments matched, just show raw text
-  if (segments.length === 0) {
-    return <p className="text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap">{content}</p>;
-  }
+function StreamingResponse({
+  content,
+  claims,
+}: {
+  content: string;
+  claims: ClaimClassification[];
+}) {
+  const [revealed, setRevealed] = useState(0);
 
+  useEffect(() => {
+    setRevealed(0);
+    if (!content) return;
+
+    let raf: number;
+    let current = 0;
+
+    function tick() {
+      // Advance ~4 words per frame for a natural flow
+      for (let w = 0; w < 4; w++) {
+        const next = content.indexOf(" ", current + 1);
+        current = next === -1 ? content.length : next + 1;
+      }
+      setRevealed(Math.min(current, content.length));
+
+      if (current < content.length) {
+        raf = requestAnimationFrame(tick);
+      }
+    }
+
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [content]);
+
+  const done = revealed >= content.length;
+  const segments = buildSegments(content, claims);
+
+  let charsLeft = revealed;
   return (
     <div className="text-zinc-700 dark:text-zinc-300 whitespace-pre-wrap">
-      {segments.map((seg, i) =>
-        seg.status ? (
+      {segments.map((seg, i) => {
+        if (charsLeft <= 0) return null;
+        const visLen = Math.min(seg.text.length, charsLeft);
+        charsLeft -= visLen;
+        const visText = seg.text.slice(0, visLen);
+
+        return seg.status ? (
           <span key={i} className={`inline rounded px-1 py-0.5 ${statusColor(seg.status)}`}>
-            {seg.text}
+            {visText}
           </span>
         ) : (
-          <span key={i}>{seg.text}</span>
-        )
-      )}
+          <span key={i}>{visText}</span>
+        );
+      })}
+      {!done && <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-zinc-500 align-text-bottom dark:bg-zinc-400" />}
     </div>
   );
 }
@@ -235,20 +270,171 @@ function WalletPanel({ wallets }: { wallets: Record<string, WalletInfo | { error
   );
 }
 
+const PHASE_LABELS: Record<string, string> = {
+  spending_cap: "Spending Cap",
+  balance_check: "On-Chain Balance",
+  escrow: "Escrow",
+};
+
+const PHASE_ORDER = ["spending_cap", "balance_check", "escrow"] as const;
+
+function StatusIcon({ status }: { status: string }) {
+  if (status === "checking") return <div className="h-3 w-3 animate-spin rounded-full border-2 border-yellow-400 border-t-transparent" />;
+  if (status === "passed") return <span className="text-green-400 text-sm">&#10003;</span>;
+  if (status === "blocked") return <span className="text-red-400 text-sm">&#10007;</span>;
+  return <div className="h-3 w-3 rounded-full bg-zinc-600" />;
+}
+
+function SpendingBar({ agent, data }: { agent: string; data: SpendingAgent }) {
+  const pct = Math.min(data.percent, 100);
+  const barColor = pct > 90 ? "bg-red-500" : pct > 60 ? "bg-yellow-500" : "bg-green-500";
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-zinc-400">Agent {agent}</span>
+        <span className="font-mono text-zinc-300">{data.spent.toFixed(4)} / {data.cap} KITE</span>
+      </div>
+      <div className="h-2 w-full rounded-full bg-zinc-700">
+        <div
+          className={`h-2 rounded-full transition-all duration-500 ${barColor}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <div className="flex justify-between text-[10px] text-zinc-500">
+        <span>{pct.toFixed(1)}% used</span>
+        <span>{data.remaining.toFixed(4)} remaining</span>
+      </div>
+    </div>
+  );
+}
+
+function SecurityPanel({ events }: { events: SecurityEvent[] }) {
+  if (events.length === 0) return null;
+
+  // Get the latest event per phase
+  const latestByPhase: Record<string, SecurityEvent> = {};
+  for (const e of events) {
+    latestByPhase[e.phase] = e;
+  }
+
+  // Get the most recent spending state
+  const latestEvent = events[events.length - 1];
+  const spending = latestEvent.spending;
+
+  return (
+    <div className="mb-4 rounded-lg border border-zinc-700 bg-zinc-900 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">x402 Security</span>
+      </div>
+
+      {/* Spending bars */}
+      <div className="mb-4 grid grid-cols-2 gap-4">
+        <SpendingBar agent="A" data={spending.A} />
+        <SpendingBar agent="B" data={spending.B} />
+      </div>
+
+      {/* Phase chain */}
+      <div className="flex items-center gap-1">
+        {PHASE_ORDER.map((phase, i) => {
+          const ev = latestByPhase[phase];
+          const status = ev?.status || "pending";
+          const bgClass =
+            status === "passed" ? "border-green-800 bg-green-950/50" :
+            status === "blocked" ? "border-red-800 bg-red-950/50" :
+            status === "checking" ? "border-yellow-800 bg-yellow-950/50" :
+            "border-zinc-700 bg-zinc-800/50";
+
+          return (
+            <div key={phase} className="flex items-center gap-1">
+              {i > 0 && (
+                <div className={`h-px w-4 ${status === "passed" ? "bg-green-600" : status === "blocked" ? "bg-red-600" : "bg-zinc-600"}`} />
+              )}
+              <div className={`flex items-center gap-2 rounded-md border px-3 py-2 ${bgClass}`}>
+                <StatusIcon status={status} />
+                <div>
+                  <div className="text-xs font-medium text-zinc-200">{PHASE_LABELS[phase]}</div>
+                  {ev && (
+                    <div className="text-[10px] text-zinc-400">{ev.message}</div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Balance details if available */}
+      {latestByPhase.balance_check?.balances && latestByPhase.balance_check.status === "passed" && (
+        <div className="mt-3 grid grid-cols-2 gap-4 text-xs text-zinc-400">
+          <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
+            <span>Agent A on-chain</span>
+            <span className="font-mono text-zinc-200">{parseFloat(latestByPhase.balance_check.balances.A.kite).toFixed(4)} KITE</span>
+          </div>
+          <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
+            <span>Agent B on-chain</span>
+            <span className="font-mono text-zinc-200">{parseFloat(latestByPhase.balance_check.balances.B.kite).toFixed(4)} KITE</span>
+          </div>
+        </div>
+      )}
+
+      {/* Escrow tx hashes if available */}
+      {latestByPhase.escrow?.escrows && latestByPhase.escrow.status === "passed" && (
+        <div className="mt-2 grid grid-cols-2 gap-4 text-xs text-zinc-400">
+          {latestByPhase.escrow.escrows.A.transactionHash && (
+            <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
+              <span>Agent A escrow tx</span>
+              <a
+                href={`${EXPLORER}/tx/${latestByPhase.escrow.escrows.A.transactionHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-blue-400 underline"
+              >
+                {latestByPhase.escrow.escrows.A.transactionHash.slice(0, 10)}...
+              </a>
+            </div>
+          )}
+          {latestByPhase.escrow.escrows.B.transactionHash && (
+            <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
+              <span>Agent B escrow tx</span>
+              <a
+                href={`${EXPLORER}/tx/${latestByPhase.escrow.escrows.B.transactionHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-blue-400 underline"
+              >
+                {latestByPhase.escrow.escrows.B.transactionHash.slice(0, 10)}...
+              </a>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Home() {
   const [query, setQuery] = useState("");
+  const [submittedQuery, setSubmittedQuery] = useState("");
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [steps, setSteps] = useState<string[]>([]);
   const [wallets, setWallets] = useState<Record<string, WalletInfo | { error: string }> | null>(null);
+  const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const scrollToBottom = useCallback(() => {
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    });
+  }, []);
 
   const fetchWallets = useCallback(async () => {
     try {
       const res = await fetch("/api/wallets");
       if (res.ok) setWallets(await res.json());
     } catch {
-      // silently fail — wallets panel just won't show
+      // silently fail
     }
   }, []);
 
@@ -256,14 +442,22 @@ export default function Home() {
     fetchWallets();
   }, [fetchWallets]);
 
+  // Auto-scroll when new content appears
+  useEffect(() => {
+    scrollToBottom();
+  }, [steps, securityEvents, result, error, submittedQuery, scrollToBottom]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!query.trim()) return;
 
+    setSubmittedQuery(query);
+    setQuery("");
     setLoading(true);
     setError("");
     setResult(null);
     setSteps([]);
+    setSecurityEvents([]);
 
     try {
       const res = await fetch("/api/query", {
@@ -299,6 +493,8 @@ export default function Home() {
             const event = JSON.parse(match[1]);
             if (event.type === "step") {
               setSteps((prev) => [...prev, event.data.message]);
+            } else if (event.type === "security") {
+              setSecurityEvents((prev) => [...prev, event.data as SecurityEvent]);
             } else if (event.type === "result") {
               setResult(event.data);
               fetchWallets();
@@ -320,241 +516,308 @@ export default function Home() {
   const agentAClaims = result?.verification.claims.allClaims.filter((c) => c.source === "A") || [];
   const agentBClaims = result?.verification.claims.allClaims.filter((c) => c.source === "B") || [];
 
+  const hasActivity = !!(submittedQuery || loading || result || error);
+
   return (
-    <div className="flex min-h-screen flex-col items-center bg-zinc-50 px-4 py-12 font-sans dark:bg-black">
-      <div className="w-full max-w-4xl">
-        <h1 className="mb-1 text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
-          Sniper
-        </h1>
-        <p className="mb-6 text-zinc-500 dark:text-zinc-400">
-          Multi-model AI orchestrator with VeriScore verification and Kite staking
-        </p>
-
-        <WalletPanel wallets={wallets} />
-
-        <form onSubmit={handleSubmit} className="mb-8">
-          <div className="flex gap-3">
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Ask anything..."
-              className="flex-1 rounded-lg border border-zinc-300 bg-white px-4 py-3 text-zinc-900 placeholder-zinc-400 focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500"
-              disabled={loading}
-            />
-            <button
-              type="submit"
-              disabled={loading || !query.trim()}
-              className="rounded-lg bg-zinc-900 px-6 py-3 font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
-            >
-              {loading ? "Processing..." : "Ask"}
-            </button>
-          </div>
-        </form>
-
-        {(loading || (steps.length > 0 && !result)) && (
-          <div className="mb-6 rounded-lg border border-zinc-200 bg-zinc-900 p-4 font-mono text-sm dark:border-zinc-700">
-            <div className="mb-2 flex items-center gap-2">
-              <div className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
-              <span className="text-xs font-semibold uppercase tracking-wider text-green-400">Live</span>
-            </div>
-            <div className="max-h-48 space-y-1 overflow-y-auto">
-              {steps.map((step, i) => (
-                <div key={i} className="flex gap-2 text-xs">
-                  <span className="shrink-0 text-zinc-500">[{i + 1}]</span>
-                  <span className={
-                    step.includes("failed") || step.includes("error")
-                      ? "text-red-400"
-                      : step.includes("staked") || step.includes("rewarded") || step.includes("Winner")
-                        ? "text-green-400"
-                        : step.includes("VeriScore")
-                          ? "text-yellow-400"
-                          : "text-zinc-300"
-                  }>
-                    {step}
-                  </span>
-                </div>
-              ))}
-              {loading && (
-                <div className="flex items-center gap-2 text-xs text-zinc-500">
-                  <div className="h-3 w-3 animate-spin rounded-full border border-zinc-600 border-t-zinc-300" />
-                  <span>Processing...</span>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
-            {error}
-          </div>
-        )}
-
-        {result && (
-          <div className="space-y-6">
-            {/* VeriScore Cards */}
-            <div className="grid grid-cols-2 gap-4">
-              <ScoreCard label="Agent A — OpenAI (VeriScore)" score={result.verification.scores.agentA} />
-              <ScoreCard label="Agent B — Gemini (VeriScore)" score={result.verification.scores.agentB} />
-            </div>
-
-            {/* Winner */}
-            <div className="rounded-lg border-2 border-green-300 bg-green-50 p-4 dark:border-green-800 dark:bg-green-950">
-              <div className="flex items-center gap-2">
-                <span className="text-lg font-bold text-green-700 dark:text-green-400">
-                  Winner: Agent {result.verification.claims.winner} ({result.verification.claims.winner === "A" ? "OpenAI" : "Gemini"})
-                </span>
-              </div>
-              <p className="mt-2 text-sm text-green-800 dark:text-green-300">
-                <strong>Best novel insight:</strong> {result.verification.claims.bestNovelInsight.insight}
+    <div className="flex h-screen flex-col bg-zinc-50 font-sans dark:bg-black">
+      {/* Scrollable content area */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        {/* Narrow centered column for idle state + processing */}
+        <div className="mx-auto w-full max-w-4xl px-4 py-6">
+          {/* Header + wallets — only when idle */}
+          {!hasActivity && (
+            <div className="flex min-h-[60vh] flex-col items-center justify-center">
+              <h1 className="mb-1 text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
+                Sniper
+              </h1>
+              <p className="mb-8 text-zinc-500 dark:text-zinc-400">
+                Multi-model AI orchestrator with VeriScore verification and Kite escrow
               </p>
-              <p className="mt-1 text-xs text-green-600 dark:text-green-500">
-                {result.verification.claims.bestNovelInsight.reasoning}
-              </p>
+              <WalletPanel wallets={wallets} />
             </div>
+          )}
 
-            {/* Agent Responses with Highlighted Claims */}
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              {/* Agent A */}
-              <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-                  <h3 className="font-semibold text-zinc-800 dark:text-zinc-200">Agent A — {result.individualResponses.openai.model}</h3>
-                  <div className="mt-1 flex gap-2 text-xs">
-                    <span className="rounded bg-green-200 px-1.5 py-0.5 text-green-800 dark:bg-green-800 dark:text-green-200">
-                      {agentAClaims.filter((c) => c.status === "supported").length} supported
-                    </span>
-                    <span className="rounded bg-red-200 px-1.5 py-0.5 text-red-800 dark:bg-red-800 dark:text-red-200">
-                      {agentAClaims.filter((c) => c.status === "contradicted").length} contradicted
-                    </span>
-                    <span className="rounded bg-yellow-200 px-1.5 py-0.5 text-yellow-800 dark:bg-yellow-800 dark:text-yellow-200">
-                      {agentAClaims.filter((c) => c.status === "inconclusive").length} inconclusive
-                    </span>
-                    <span className="rounded bg-green-300 px-1.5 py-0.5 text-green-900 dark:bg-green-700 dark:text-green-100">
-                      {agentAClaims.filter((c) => c.status === "novel").length} novel
-                    </span>
-                  </div>
-                </div>
-                <div className="p-4">
-                  {result.individualResponses.openai.error ? (
-                    <p className="text-red-500">{result.individualResponses.openai.error}</p>
-                  ) : (
-                    <HighlightedResponse
-                      content={result.individualResponses.openai.content}
-                      claims={agentAClaims}
-                    />
-                  )}
-                </div>
-              </div>
-
-              {/* Agent B */}
-              <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-                  <h3 className="font-semibold text-zinc-800 dark:text-zinc-200">Agent B — {result.individualResponses.gemini.model}</h3>
-                  <div className="mt-1 flex gap-2 text-xs">
-                    <span className="rounded bg-green-200 px-1.5 py-0.5 text-green-800 dark:bg-green-800 dark:text-green-200">
-                      {agentBClaims.filter((c) => c.status === "supported").length} supported
-                    </span>
-                    <span className="rounded bg-red-200 px-1.5 py-0.5 text-red-800 dark:bg-red-800 dark:text-red-200">
-                      {agentBClaims.filter((c) => c.status === "contradicted").length} contradicted
-                    </span>
-                    <span className="rounded bg-yellow-200 px-1.5 py-0.5 text-yellow-800 dark:bg-yellow-800 dark:text-yellow-200">
-                      {agentBClaims.filter((c) => c.status === "inconclusive").length} inconclusive
-                    </span>
-                    <span className="rounded bg-green-300 px-1.5 py-0.5 text-green-900 dark:bg-green-700 dark:text-green-100">
-                      {agentBClaims.filter((c) => c.status === "novel").length} novel
-                    </span>
-                  </div>
-                </div>
-                <div className="p-4">
-                  {result.individualResponses.gemini.error ? (
-                    <p className="text-red-500">{result.individualResponses.gemini.error}</p>
-                  ) : (
-                    <HighlightedResponse
-                      content={result.individualResponses.gemini.content}
-                      claims={agentBClaims}
-                    />
-                  )}
-                </div>
+          {/* User query bubble */}
+          {submittedQuery && (
+            <div className="mb-4 flex justify-end">
+              <div className="max-w-[70%] rounded-2xl rounded-br-md bg-zinc-900 px-4 py-3 text-sm text-zinc-100 dark:bg-zinc-800">
+                {submittedQuery}
               </div>
             </div>
+          )}
 
-            {/* Combined Analysis */}
-            <div className="space-y-4">
-              {/* Consensus */}
-              {result.verification.claims.consensusInsights.length > 0 && (
-                <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                  <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                    Consensus Insights (Both Agents Agree)
-                  </h3>
-                  <ul className="space-y-1">
-                    {result.verification.claims.consensusInsights.map((insight, i) => (
-                      <li key={i} className="text-sm text-zinc-700 dark:text-zinc-300">
-                        {insight}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+          {/* Processing state — stays in narrow column */}
+          {(loading || (!result && (securityEvents.length > 0 || steps.length > 0 || error))) && (
+            <div className="mb-4">
+              {securityEvents.length > 0 && (
+                <SecurityPanel events={securityEvents} />
               )}
 
-              {/* Novel Insights */}
-              {result.verification.claims.novelInsights.length > 0 && (
-                <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                  <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                    Novel Insights
-                  </h3>
-                  <ul className="space-y-2">
-                    {result.verification.claims.novelInsights.map((n, i) => (
-                      <li
-                        key={i}
-                        className="rounded border-l-4 border-green-500 bg-green-50 p-2 text-sm text-green-700 dark:bg-green-900/20 dark:text-green-400"
-                      >
-                        <span className="mr-2 rounded bg-green-200 px-1.5 py-0.5 text-xs font-semibold text-green-800 dark:bg-green-800 dark:text-green-200">
-                          Agent {n.agent}
+              {(loading || steps.length > 0) && (
+                <div className="mb-4 rounded-lg border border-zinc-200 bg-zinc-900 p-4 font-mono text-sm dark:border-zinc-700">
+                  <div className="mb-2 flex items-center gap-2">
+                    <div className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
+                    <span className="text-xs font-semibold uppercase tracking-wider text-green-400">Live</span>
+                  </div>
+                  <div className="max-h-48 space-y-1 overflow-y-auto">
+                    {steps.map((step, i) => (
+                      <div key={i} className="flex gap-2 text-xs">
+                        <span className="shrink-0 text-zinc-500">[{i + 1}]</span>
+                        <span className={
+                          step.includes("failed") || step.includes("error")
+                            ? "text-red-400"
+                            : step.includes("escrowed") || step.includes("rewarded") || step.includes("Winner")
+                              ? "text-green-400"
+                              : step.includes("VeriScore")
+                                ? "text-yellow-400"
+                                : "text-zinc-300"
+                        }>
+                          {step}
                         </span>
-                        {n.insight}
-                      </li>
+                      </div>
                     ))}
-                  </ul>
+                    {loading && (
+                      <div className="flex items-center gap-2 text-xs text-zinc-500">
+                        <div className="h-3 w-3 animate-spin rounded-full border border-zinc-600 border-t-zinc-300" />
+                        <span>Processing...</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {error && (
+                <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
+                  {error}
                 </div>
               )}
             </div>
+          )}
+        </div>
 
-            {/* Transactions */}
-            <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-              <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                Kite Transactions
-              </h3>
-              <div className="space-y-2 text-sm">
-                <div className="flex items-center justify-between">
-                  <span className="text-zinc-600 dark:text-zinc-400">Agent A Stake</span>
-                  <TxLink hash={result.transactions.stakeA.transactionHash} />
+        {/* Full-width results layout — sidebars + center */}
+        {result && (
+          <div className="w-full px-4 pb-6">
+            {error && (
+              <div className="mx-auto mb-4 max-w-4xl rounded-lg border border-red-200 bg-red-50 p-4 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
+                {error}
+              </div>
+            )}
+
+            <div className="flex gap-5">
+              {/* Left sidebar — VeriScores */}
+              <div className="hidden w-72 shrink-0 xl:block">
+                <div className="sticky top-6 space-y-4">
+                  <ScoreCard label="Agent A — OpenAI" score={result.verification.scores.agentA} />
+                  <ScoreCard label="Agent B — Gemini" score={result.verification.scores.agentB} />
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-zinc-600 dark:text-zinc-400">Agent B Stake</span>
-                  <TxLink hash={result.transactions.stakeB.transactionHash} />
+              </div>
+
+              {/* Center — main content */}
+              <div className="min-w-0 flex-1 space-y-5">
+                {/* VeriScore Cards — visible on smaller screens where sidebars are hidden */}
+                <div className="grid grid-cols-2 gap-4 xl:hidden">
+                  <ScoreCard label="Agent A — OpenAI" score={result.verification.scores.agentA} />
+                  <ScoreCard label="Agent B — Gemini" score={result.verification.scores.agentB} />
                 </div>
-                {result.transactions.reward && (
-                  <>
-                    <hr className="border-zinc-200 dark:border-zinc-700" />
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-600 dark:text-zinc-400">
-                        Winner Reward ({result.transactions.reward.winnerAmount} KITE)
-                      </span>
-                      <TxLink hash={result.transactions.reward.winnerTx.transactionHash} />
+
+                {/* Winner */}
+                <div className="rounded-lg border-2 border-green-300 bg-green-50 p-4 dark:border-green-800 dark:bg-green-950">
+                  <span className="text-lg font-bold text-green-700 dark:text-green-400">
+                    Winner: Agent {result.verification.claims.winner} ({result.verification.claims.winner === "A" ? "OpenAI" : "Gemini"})
+                  </span>
+                  <p className="mt-2 text-sm text-green-800 dark:text-green-300">
+                    <strong>Best novel insight:</strong> {result.verification.claims.bestNovelInsight.insight}
+                  </p>
+                  <p className="mt-1 text-xs text-green-600 dark:text-green-500">
+                    {result.verification.claims.bestNovelInsight.reasoning}
+                  </p>
+                </div>
+
+                {/* Agent Responses */}
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  {/* Agent A */}
+                  <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+                    <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+                      <h3 className="font-semibold text-zinc-800 dark:text-zinc-200">Agent A — {result.individualResponses.openai.model}</h3>
+                      <div className="mt-1 flex flex-wrap gap-1.5 text-xs">
+                        <span className="rounded bg-green-200 px-1.5 py-0.5 text-green-800 dark:bg-green-800 dark:text-green-200">
+                          {agentAClaims.filter((c) => c.status === "supported").length} supported
+                        </span>
+                        <span className="rounded bg-red-200 px-1.5 py-0.5 text-red-800 dark:bg-red-800 dark:text-red-200">
+                          {agentAClaims.filter((c) => c.status === "contradicted").length} contradicted
+                        </span>
+                        <span className="rounded bg-yellow-200 px-1.5 py-0.5 text-yellow-800 dark:bg-yellow-800 dark:text-yellow-200">
+                          {agentAClaims.filter((c) => c.status === "inconclusive").length} inconclusive
+                        </span>
+                        <span className="rounded bg-green-300 px-1.5 py-0.5 text-green-900 dark:bg-green-700 dark:text-green-100">
+                          {agentAClaims.filter((c) => c.status === "novel").length} novel
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-zinc-600 dark:text-zinc-400">
-                        Verifier Cut ({result.transactions.reward.verifierCut} KITE)
-                      </span>
-                      <span className="text-xs text-zinc-400">retained</span>
+                    <div className="p-4">
+                      {result.individualResponses.openai.error ? (
+                        <p className="text-red-500">{result.individualResponses.openai.error}</p>
+                      ) : (
+                        <StreamingResponse content={result.individualResponses.openai.content} claims={agentAClaims} />
+                      )}
                     </div>
-                  </>
+                  </div>
+
+                  {/* Agent B */}
+                  <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+                    <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+                      <h3 className="font-semibold text-zinc-800 dark:text-zinc-200">Agent B — {result.individualResponses.gemini.model}</h3>
+                      <div className="mt-1 flex flex-wrap gap-1.5 text-xs">
+                        <span className="rounded bg-green-200 px-1.5 py-0.5 text-green-800 dark:bg-green-800 dark:text-green-200">
+                          {agentBClaims.filter((c) => c.status === "supported").length} supported
+                        </span>
+                        <span className="rounded bg-red-200 px-1.5 py-0.5 text-red-800 dark:bg-red-800 dark:text-red-200">
+                          {agentBClaims.filter((c) => c.status === "contradicted").length} contradicted
+                        </span>
+                        <span className="rounded bg-yellow-200 px-1.5 py-0.5 text-yellow-800 dark:bg-yellow-800 dark:text-yellow-200">
+                          {agentBClaims.filter((c) => c.status === "inconclusive").length} inconclusive
+                        </span>
+                        <span className="rounded bg-green-300 px-1.5 py-0.5 text-green-900 dark:bg-green-700 dark:text-green-100">
+                          {agentBClaims.filter((c) => c.status === "novel").length} novel
+                        </span>
+                      </div>
+                    </div>
+                    <div className="p-4">
+                      {result.individualResponses.gemini.error ? (
+                        <p className="text-red-500">{result.individualResponses.gemini.error}</p>
+                      ) : (
+                        <StreamingResponse content={result.individualResponses.gemini.content} claims={agentBClaims} />
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Combined Analysis */}
+                {result.verification.claims.consensusInsights.length > 0 && (
+                  <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                    <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                      Consensus Insights (Both Agents Agree)
+                    </h3>
+                    <ul className="space-y-1">
+                      {result.verification.claims.consensusInsights.map((insight, i) => (
+                        <li key={i} className="text-sm text-zinc-700 dark:text-zinc-300">{insight}</li>
+                      ))}
+                    </ul>
+                  </div>
                 )}
+
+                {result.verification.claims.novelInsights.length > 0 && (
+                  <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                    <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                      Novel Insights
+                    </h3>
+                    <ul className="space-y-2">
+                      {result.verification.claims.novelInsights.map((n, i) => (
+                        <li key={i} className="rounded border-l-4 border-green-500 bg-green-50 p-2 text-sm text-green-700 dark:bg-green-900/20 dark:text-green-400">
+                          <span className="mr-2 rounded bg-green-200 px-1.5 py-0.5 text-xs font-semibold text-green-800 dark:bg-green-800 dark:text-green-200">
+                            Agent {n.agent}
+                          </span>
+                          {n.insight}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* x402 + Kite Transactions — visible on smaller screens below content */}
+                <div className="space-y-4 xl:hidden">
+                  {securityEvents.length > 0 && <SecurityPanel events={securityEvents} />}
+                  <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                    <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                      Kite Transactions
+                    </h3>
+                    <div className="space-y-2 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-600 dark:text-zinc-400">Agent A Escrow</span>
+                        <TxLink hash={result.transactions.escrowA.transactionHash} />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-600 dark:text-zinc-400">Agent B Escrow</span>
+                        <TxLink hash={result.transactions.escrowB.transactionHash} />
+                      </div>
+                      {result.transactions.reward && (
+                        <>
+                          <hr className="border-zinc-200 dark:border-zinc-700" />
+                          <div className="flex items-center justify-between">
+                            <span className="text-zinc-600 dark:text-zinc-400">Winner Reward ({result.transactions.reward.winnerAmount} KITE)</span>
+                            <TxLink hash={result.transactions.reward.winnerTx.transactionHash} />
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-zinc-600 dark:text-zinc-400">Verifier Cut ({result.transactions.reward.verifierCut} KITE)</span>
+                            <span className="text-xs text-zinc-400">retained</span>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right sidebar — x402 Security + Kite Transactions */}
+              <div className="hidden w-[500px] shrink-0 xl:block">
+                <div className="sticky top-6 space-y-4">
+                  {securityEvents.length > 0 && <SecurityPanel events={securityEvents} />}
+
+                  <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                    <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                      Kite Transactions
+                    </h3>
+                    <div className="space-y-2 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-600 dark:text-zinc-400">Agent A Escrow</span>
+                        <TxLink hash={result.transactions.escrowA.transactionHash} />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-600 dark:text-zinc-400">Agent B Escrow</span>
+                        <TxLink hash={result.transactions.escrowB.transactionHash} />
+                      </div>
+                      {result.transactions.reward && (
+                        <>
+                          <hr className="border-zinc-200 dark:border-zinc-700" />
+                          <div className="flex items-center justify-between">
+                            <span className="text-zinc-600 dark:text-zinc-400">Winner Reward ({result.transactions.reward.winnerAmount} KITE)</span>
+                            <TxLink hash={result.transactions.reward.winnerTx.transactionHash} />
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-zinc-600 dark:text-zinc-400">Verifier Cut ({result.transactions.reward.verifierCut} KITE)</span>
+                            <span className="text-xs text-zinc-400">retained</span>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         )}
+      </div>
+
+      {/* Input bar — pinned to bottom */}
+      <div className="shrink-0 border-t border-zinc-200 bg-zinc-50 px-4 py-4 dark:border-zinc-800 dark:bg-black">
+        <form onSubmit={handleSubmit} className="mx-auto flex w-full max-w-4xl gap-3">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Ask anything..."
+            className="flex-1 rounded-xl border border-zinc-300 bg-white px-4 py-3 text-zinc-900 placeholder-zinc-400 focus:border-zinc-500 focus:outline-none dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500"
+            disabled={loading}
+          />
+          <button
+            type="submit"
+            disabled={loading || !query.trim()}
+            className="rounded-xl bg-zinc-900 px-6 py-3 font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          >
+            {loading ? "Processing..." : "Ask"}
+          </button>
+        </form>
       </div>
     </div>
   );

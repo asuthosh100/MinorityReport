@@ -6,8 +6,8 @@ export const KITE_EXPLORER_URL = "https://testnet.kitescan.ai";
 
 export const SETTLEMENT_TOKEN = "0x0fF5393387ad2f9f691FD6Fd28e07E3969e27e63";
 
-// Stake amount per agent per query (in token units, 18 decimals)
-export const STAKE_AMOUNT = "0.0001";
+// Escrow amount per agent per query (in token units, 18 decimals)
+export const ESCROW_AMOUNT = "0.0001";
 
 // Verifier takes 10% of the total pool
 export const VERIFIER_CUT_PERCENT = 10;

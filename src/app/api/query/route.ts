@@ -1,8 +1,15 @@
 import { NextRequest } from "next/server";
 import { inputOrchestrator } from "@/lib/orchestrator/input";
-import { stakeFromAgent, distributeRewards } from "@/lib/kite/transactions";
+import { escrowFromAgent, distributeRewards } from "@/lib/kite/transactions";
 import { runVerification } from "@/lib/verifier/claude";
-import { STAKE_AMOUNT } from "@/lib/kite/config";
+import { ESCROW_AMOUNT } from "@/lib/kite/config";
+import {
+  checkRateLimit,
+  checkSpendingCap,
+  recordSpending,
+  preflightBalanceCheck,
+  getSpendingState,
+} from "@/lib/x402/security";
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
@@ -15,6 +22,23 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  // Rate limit check (before opening SSE stream)
+  const rateCheck = checkRateLimit();
+  if (!rateCheck.allowed) {
+    return new Response(
+      JSON.stringify({
+        error: `Rate limit exceeded. Try again in ${Math.ceil((rateCheck.retryAfterMs || 0) / 1000)}s (max 10 requests/min).`,
+      }),
+      {
+        status: 429,
+        headers: {
+          "Content-Type": "application/json",
+          "Retry-After": String(Math.ceil((rateCheck.retryAfterMs || 0) / 1000)),
+        },
+      }
+    );
+  }
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -25,35 +49,115 @@ export async function POST(request: NextRequest) {
       }
 
       try {
-        // Step 1: Stake
-        send("step", { message: `Agent A staking ${STAKE_AMOUNT} KITE...` });
-        send("step", { message: `Agent B staking ${STAKE_AMOUNT} KITE...` });
-
-        const [stakeA, stakeB] = await Promise.allSettled([
-          stakeFromAgent("A"),
-          stakeFromAgent("B"),
-        ]);
-
-        const stakeAResult = stakeA.status === "fulfilled" ? stakeA.value : { success: false, error: String(stakeA.reason) };
-        const stakeBResult = stakeB.status === "fulfilled" ? stakeB.value : { success: false, error: String(stakeB.reason) };
-
-        send("step", {
-          message: stakeAResult.success
-            ? `Agent A staked ${STAKE_AMOUNT} KITE (tx: ${stakeAResult.transactionHash?.slice(0, 10)}...)`
-            : `Agent A stake failed: ${stakeAResult.error}`,
-        });
-        send("step", {
-          message: stakeBResult.success
-            ? `Agent B staked ${STAKE_AMOUNT} KITE (tx: ${stakeBResult.transactionHash?.slice(0, 10)}...)`
-            : `Agent B stake failed: ${stakeBResult.error}`,
+        // --- Security: Spending cap check ---
+        send("security", {
+          phase: "spending_cap",
+          status: "checking",
+          message: "Checking spending caps...",
+          spending: getSpendingState(),
         });
 
-        if (!stakeAResult.success || !stakeBResult.success) {
+        const capA = checkSpendingCap("A");
+        const capB = checkSpendingCap("B");
+
+        if (!capA.allowed || !capB.allowed) {
+          send("security", {
+            phase: "spending_cap",
+            status: "blocked",
+            message: !capA.allowed
+              ? `Agent A hit spending cap: ${capA.spent.toFixed(4)} / ${capA.cap} KITE`
+              : `Agent B hit spending cap: ${capB.spent.toFixed(4)} / ${capB.cap} KITE`,
+            spending: getSpendingState(),
+          });
           send("error", {
-            message: "Staking failed. Query aborted — both agents must stake before proceeding.",
+            message: `Spending cap reached. Reset requires server restart.`,
           });
           return;
         }
+
+        send("security", {
+          phase: "spending_cap",
+          status: "passed",
+          message: `Spending caps OK — A: ${capA.spent.toFixed(4)}/${capA.cap} KITE | B: ${capB.spent.toFixed(4)}/${capB.cap} KITE`,
+          spending: getSpendingState(),
+        });
+
+        // --- Security: Pre-flight balance check ---
+        send("security", {
+          phase: "balance_check",
+          status: "checking",
+          message: "Checking on-chain balances...",
+          spending: getSpendingState(),
+        });
+
+        const [balA, balB] = await Promise.all([
+          preflightBalanceCheck("A"),
+          preflightBalanceCheck("B"),
+        ]);
+
+        if (!balA.ok || !balB.ok) {
+          const err = !balA.ok ? balA.error : balB.error;
+          send("security", {
+            phase: "balance_check",
+            status: "blocked",
+            message: err || "Balance check failed",
+            balances: { A: { kite: balA.kite, usdt: balA.usdt }, B: { kite: balB.kite, usdt: balB.usdt } },
+            spending: getSpendingState(),
+          });
+          send("error", { message: err || "Balance check failed" });
+          return;
+        }
+
+        send("security", {
+          phase: "balance_check",
+          status: "passed",
+          message: `Balances OK — A: ${parseFloat(balA.kite).toFixed(4)} KITE | B: ${parseFloat(balB.kite).toFixed(4)} KITE`,
+          balances: { A: { kite: balA.kite, usdt: balA.usdt }, B: { kite: balB.kite, usdt: balB.usdt } },
+          spending: getSpendingState(),
+        });
+
+        // --- Security: Escrow ---
+        send("security", {
+          phase: "escrow",
+          status: "checking",
+          message: `Escrowing ${ESCROW_AMOUNT} KITE from each agent...`,
+          spending: getSpendingState(),
+        });
+
+        const [escrowA, escrowB] = await Promise.allSettled([
+          escrowFromAgent("A"),
+          escrowFromAgent("B"),
+        ]);
+
+        const escrowAResult = escrowA.status === "fulfilled" ? escrowA.value : { success: false, error: String(escrowA.reason) };
+        const escrowBResult = escrowB.status === "fulfilled" ? escrowB.value : { success: false, error: String(escrowB.reason) };
+
+        if (!escrowAResult.success || !escrowBResult.success) {
+          send("security", {
+            phase: "escrow",
+            status: "blocked",
+            message: "Escrow failed — query aborted",
+            escrows: { A: escrowAResult, B: escrowBResult },
+            spending: getSpendingState(),
+          });
+          send("error", {
+            message: "Escrow failed. Both agents must escrow before proceeding.",
+          });
+          return;
+        }
+
+        // Record spending after successful escrow
+        const escrowAmount = parseFloat(ESCROW_AMOUNT);
+        recordSpending("A", escrowAmount);
+        recordSpending("B", escrowAmount);
+
+        send("security", {
+          phase: "escrow",
+          status: "passed",
+          message: `Both agents escrowed ${ESCROW_AMOUNT} KITE`,
+          escrows: { A: escrowAResult, B: escrowBResult },
+          spending: getSpendingState(),
+        });
 
         // Step 2: Query models
         send("step", { message: "Querying Agent A (OpenAI gpt-4o-mini)..." });
@@ -113,7 +217,7 @@ export async function POST(request: NextRequest) {
         // Final result
         send("result", {
           verification,
-          transactions: { stakeA: stakeAResult, stakeB: stakeBResult, reward },
+          transactions: { escrowA: escrowAResult, escrowB: escrowBResult, reward },
           individualResponses,
         });
       } catch (error) {

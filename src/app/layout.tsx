@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Sniper",
-  description: "Multi-model AI orchestrator with VeriScore verification and Kite staking",
+  description: "Multi-model AI orchestrator with VeriScore verification and Kite escrow",
 };
 
 export default function RootLayout({
