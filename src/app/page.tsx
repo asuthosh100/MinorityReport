@@ -650,7 +650,7 @@ function WalletPanel({ wallets }: { wallets: Record<string, WalletInfo | { error
     { key: "agentA", label: "Agent A (OpenAI)" },
     { key: "agentB", label: "Agent B (Gemini)" },
     { key: "agentC", label: "Agent C (Claude)" },
-    { key: "verifier", label: "Verifier (Claude)" },
+    { key: "verifier", label: "Verifier" },
   ];
 
   return (
@@ -1054,7 +1054,7 @@ export default function Home() {
           {!hasActivity && (
             <div className="flex min-h-[60vh] flex-col items-center justify-center">
               <h1 className="mb-1 text-3xl font-bold tracking-tight text-[#ECECEC]">
-                Sniper
+                Minority Report
               </h1>
               <p className="mb-8 text-[#888888]">
                 Multi-model AI orchestrator with VeriScore verification and Kite escrow
@@ -1214,8 +1214,6 @@ export default function Home() {
                         <div className="p-4">
                           {result.individualResponses.openai.error ? (
                             <p className="text-red-500">{result.individualResponses.openai.error}</p>
-                          ) : (result.verification.classifierResult?.responses?.["gpt"] || result.verification.classifierResult?.responses?.["gpt-4"]) ? (
-                            <AnnotatedResponse text={result.verification.classifierResult.responses["gpt"] || result.verification.classifierResult.responses["gpt-4"]} />
                           ) : (
                             <StreamingResponse content={result.individualResponses.openai.content} />
                           )}
@@ -1239,8 +1237,6 @@ export default function Home() {
                         <div className="p-4">
                           {result.individualResponses.gemini.error ? (
                             <p className="text-red-500">{result.individualResponses.gemini.error}</p>
-                          ) : result.verification.classifierResult?.responses?.["gemini"] ? (
-                            <AnnotatedResponse text={result.verification.classifierResult.responses["gemini"]} />
                           ) : (
                             <StreamingResponse content={result.individualResponses.gemini.content} />
                           )}
@@ -1264,8 +1260,6 @@ export default function Home() {
                         <div className="p-4">
                           {result.individualResponses.claude.error ? (
                             <p className="text-red-500">{result.individualResponses.claude.error}</p>
-                          ) : result.verification.classifierResult?.responses?.["claude"] ? (
-                            <AnnotatedResponse text={result.verification.classifierResult.responses["claude"]} />
                           ) : (
                             <StreamingResponse content={result.individualResponses.claude.content} />
                           )}
