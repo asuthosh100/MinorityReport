@@ -5,6 +5,7 @@ import type { InputOrchestratorResult } from "./input";
 export interface TransactionInfo {
   escrowA: TransactionResult;
   escrowB: TransactionResult;
+  escrowC: TransactionResult;
   reward: {
     winnerTx: TransactionResult;
     verifierCut: string;
@@ -22,10 +23,11 @@ export async function outputOrchestrator(
   query: string,
   responses: InputOrchestratorResult
 ): Promise<OutputOrchestratorResult> {
-  // Step 1: Escrow from both agents in parallel
-  const [escrowA, escrowB] = await Promise.allSettled([
+  // Step 1: Escrow from all three agents in parallel
+  const [escrowA, escrowB, escrowC] = await Promise.allSettled([
     escrowFromAgent("A"),
     escrowFromAgent("B"),
+    escrowFromAgent("C"),
   ]);
 
   const escrowAResult: TransactionResult =
@@ -36,12 +38,17 @@ export async function outputOrchestrator(
     escrowB.status === "fulfilled"
       ? escrowB.value
       : { success: false, error: String(escrowB.reason) };
+  const escrowCResult: TransactionResult =
+    escrowC.status === "fulfilled"
+      ? escrowC.value
+      : { success: false, error: String(escrowC.reason) };
 
   // Step 2: Run VeriScore verification pipeline
   const verification = await runVerification(
     query,
     responses.openai.content || "",
-    responses.gemini.content || ""
+    responses.gemini.content || "",
+    responses.claude.content || ""
   );
 
   // Step 3: Distribute rewards to winner
@@ -61,6 +68,7 @@ export async function outputOrchestrator(
     transactions: {
       escrowA: escrowAResult,
       escrowB: escrowBResult,
+      escrowC: escrowCResult,
       reward,
     },
     individualResponses: responses,

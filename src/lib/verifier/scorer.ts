@@ -15,6 +15,7 @@ export interface ScoreResult {
   K: number;
   agentA: AgentScore;
   agentB: AgentScore;
+  agentC: AgentScore;
 }
 
 function computeAgentScore(
@@ -51,19 +52,18 @@ export function computeScores(
 ): ScoreResult {
   const agentAClaims = allClaims.filter((c) => c.source === "A");
   const agentBClaims = allClaims.filter((c) => c.source === "B");
+  const agentCClaims = allClaims.filter((c) => c.source === "C");
 
-  // K = median of both agents' total claims
-  const totals = [agentAClaims.length, agentBClaims.length].sort(
+  // K = median of all three agents' total claims
+  const totals = [agentAClaims.length, agentBClaims.length, agentCClaims.length].sort(
     (a, b) => a - b
   );
-  const K =
-    totals.length % 2 === 0
-      ? (totals[0] + totals[1]) / 2
-      : totals[Math.floor(totals.length / 2)];
+  const K = totals[1]; // median of 3 = middle element
 
   return {
     K,
     agentA: computeAgentScore(agentAClaims, K),
     agentB: computeAgentScore(agentBClaims, K),
+    agentC: computeAgentScore(agentCClaims, K),
   };
 }

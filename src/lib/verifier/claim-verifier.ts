@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ExtractedClaims } from "./claim-extractor";
+import type { AgentId } from "@/lib/types";
 
 function getClient() {
   return new Anthropic({ apiKey: process.env.MY_ANTHROPIC_API_KEY });
@@ -8,45 +9,45 @@ function getClient() {
 export interface ClaimClassification {
   claim: string;
   originalText: string;
-  source: "A" | "B";
+  source: AgentId;
   status: "supported" | "contradicted" | "inconclusive" | "novel";
 }
 
 export interface CrossAgentResult {
   allClaims: ClaimClassification[];
   consensusInsights: string[];
-  novelInsights: { agent: "A" | "B"; insight: string }[];
+  novelInsights: { agent: AgentId; insight: string }[];
   bestNovelInsight: {
-    agent: "A" | "B";
+    agent: AgentId;
     insight: string;
     reasoning: string;
   };
-  winner: "A" | "B";
+  winner: AgentId;
 }
 
-const VERIFICATION_PROMPT = `You are a claim verification and comparison assistant. You will receive claims extracted from two AI agents' responses to the same query.
+const VERIFICATION_PROMPT = `You are a claim verification and comparison assistant. You will receive claims extracted from three AI agents' responses to the same query.
 
-Your job is to do a UNIFIED cross-comparison of ALL claims from both agents together:
+Your job is to do a UNIFIED cross-comparison of ALL claims from all three agents together:
 
-1. For each claim, determine its status by comparing it against the OTHER agent's claims:
-   - "supported" — the other agent makes a substantially similar claim
-   - "contradicted" — the other agent directly disputes or says the opposite
-   - "inconclusive" — partial overlap, ambiguous, or can't determine from the other agent's claims
-   - "novel" — this claim is unique to this agent and the other agent says nothing about it
+1. For each claim, determine its status by comparing it against the OTHER agents' claims:
+   - "supported" — at least one other agent makes a substantially similar claim
+   - "contradicted" — at least one other agent directly disputes or says the opposite
+   - "inconclusive" — partial overlap, ambiguous, or can't determine from the other agents' claims
+   - "novel" — this claim is unique to this agent and no other agent says anything about it
 
-2. Identify consensus (majority) insights — topics/facts both agents agree on
+2. Identify consensus (majority) insights — topics/facts that multiple agents agree on
 3. Identify novel (minority) insights — unique valuable claims made by only one agent
 4. Judge which agent produced the BEST novel insight and declare a winner
 
 Respond with JSON in this exact format:
 {
   "classifiedClaims": [
-    { "claim": "...", "originalText": "...", "source": "A" | "B", "status": "supported" | "contradicted" | "inconclusive" | "novel" }
+    { "claim": "...", "originalText": "...", "source": "A" | "B" | "C", "status": "supported" | "contradicted" | "inconclusive" | "novel" }
   ],
-  "consensusInsights": ["insight both agents agree on", ...],
-  "novelInsights": [{ "agent": "A" | "B", "insight": "..." }, ...],
-  "bestNovelInsight": { "agent": "A" | "B", "insight": "...", "reasoning": "why this is the best novel insight" },
-  "winner": "A" | "B"
+  "consensusInsights": ["insight multiple agents agree on", ...],
+  "novelInsights": [{ "agent": "A" | "B" | "C", "insight": "..." }, ...],
+  "bestNovelInsight": { "agent": "A" | "B" | "C", "insight": "...", "reasoning": "why this is the best novel insight" },
+  "winner": "A" | "B" | "C"
 }`;
 
 export async function verifyClaims(
@@ -58,6 +59,10 @@ export async function verifyClaims(
     .join("\n");
 
   const agentBClaimsList = extractedClaims.agentBClaims
+    .map((c, i) => `  ${i + 1}. Claim: "${c.claim}" | Original: "${c.originalText}"`)
+    .join("\n");
+
+  const agentCClaimsList = extractedClaims.agentCClaims
     .map((c, i) => `  ${i + 1}. Claim: "${c.claim}" | Original: "${c.originalText}"`)
     .join("\n");
 
@@ -75,7 +80,10 @@ Agent A (OpenAI) claims:
 ${agentAClaimsList || "  (no verifiable claims)"}
 
 Agent B (Gemini) claims:
-${agentBClaimsList || "  (no verifiable claims)"}`,
+${agentBClaimsList || "  (no verifiable claims)"}
+
+Agent C (Claude) claims:
+${agentCClaimsList || "  (no verifiable claims)"}`,
       },
     ],
   });

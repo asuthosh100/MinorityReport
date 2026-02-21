@@ -7,6 +7,7 @@ function getClient() {
 export interface ExtractedClaims {
   agentAClaims: { claim: string; originalText: string }[];
   agentBClaims: { claim: string; originalText: string }[];
+  agentCClaims: { claim: string; originalText: string }[];
 }
 
 const EXTRACTION_PROMPT = `You are a claim extraction assistant. Extract ONLY verifiable atomic claims from the given AI response.
@@ -51,12 +52,14 @@ async function extractClaimsFromResponse(
 
 export async function extractClaims(
   agentAResponse: string,
-  agentBResponse: string
+  agentBResponse: string,
+  agentCResponse: string
 ): Promise<ExtractedClaims> {
-  const [agentAClaims, agentBClaims] = await Promise.all([
+  const [agentAClaims, agentBClaims, agentCClaims] = await Promise.all([
     extractClaimsFromResponse(agentAResponse),
     extractClaimsFromResponse(agentBResponse),
+    extractClaimsFromResponse(agentCResponse),
   ]);
 
-  return { agentAClaims, agentBClaims };
+  return { agentAClaims, agentBClaims, agentCClaims };
 }

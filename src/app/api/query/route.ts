@@ -10,6 +10,7 @@ import {
   preflightBalanceCheck,
   getSpendingState,
 } from "@/lib/x402/security";
+import { AGENT_NAMES } from "@/lib/types";
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
@@ -59,14 +60,15 @@ export async function POST(request: NextRequest) {
 
         const capA = checkSpendingCap("A");
         const capB = checkSpendingCap("B");
+        const capC = checkSpendingCap("C");
 
-        if (!capA.allowed || !capB.allowed) {
+        if (!capA.allowed || !capB.allowed || !capC.allowed) {
+          const blocked = !capA.allowed ? capA : !capB.allowed ? capB : capC;
+          const blockedAgent = !capA.allowed ? "A" : !capB.allowed ? "B" : "C";
           send("security", {
             phase: "spending_cap",
             status: "blocked",
-            message: !capA.allowed
-              ? `Agent A hit spending cap: ${capA.spent.toFixed(4)} / ${capA.cap} KITE`
-              : `Agent B hit spending cap: ${capB.spent.toFixed(4)} / ${capB.cap} KITE`,
+            message: `Agent ${blockedAgent} hit spending cap: ${blocked.spent.toFixed(4)} / ${blocked.cap} KITE`,
             spending: getSpendingState(),
           });
           send("error", {
@@ -78,7 +80,7 @@ export async function POST(request: NextRequest) {
         send("security", {
           phase: "spending_cap",
           status: "passed",
-          message: `Spending caps OK — A: ${capA.spent.toFixed(4)}/${capA.cap} KITE | B: ${capB.spent.toFixed(4)}/${capB.cap} KITE`,
+          message: `Spending caps OK — A: ${capA.spent.toFixed(4)}/${capA.cap} KITE | B: ${capB.spent.toFixed(4)}/${capB.cap} KITE | C: ${capC.spent.toFixed(4)}/${capC.cap} KITE`,
           spending: getSpendingState(),
         });
 
@@ -90,18 +92,23 @@ export async function POST(request: NextRequest) {
           spending: getSpendingState(),
         });
 
-        const [balA, balB] = await Promise.all([
+        const [balA, balB, balC] = await Promise.all([
           preflightBalanceCheck("A"),
           preflightBalanceCheck("B"),
+          preflightBalanceCheck("C"),
         ]);
 
-        if (!balA.ok || !balB.ok) {
-          const err = !balA.ok ? balA.error : balB.error;
+        if (!balA.ok || !balB.ok || !balC.ok) {
+          const err = !balA.ok ? balA.error : !balB.ok ? balB.error : balC.error;
           send("security", {
             phase: "balance_check",
             status: "blocked",
             message: err || "Balance check failed",
-            balances: { A: { kite: balA.kite, usdt: balA.usdt }, B: { kite: balB.kite, usdt: balB.usdt } },
+            balances: {
+              A: { kite: balA.kite, usdt: balA.usdt },
+              B: { kite: balB.kite, usdt: balB.usdt },
+              C: { kite: balC.kite, usdt: balC.usdt },
+            },
             spending: getSpendingState(),
           });
           send("error", { message: err || "Balance check failed" });
@@ -111,8 +118,12 @@ export async function POST(request: NextRequest) {
         send("security", {
           phase: "balance_check",
           status: "passed",
-          message: `Balances OK — A: ${parseFloat(balA.kite).toFixed(4)} KITE | B: ${parseFloat(balB.kite).toFixed(4)} KITE`,
-          balances: { A: { kite: balA.kite, usdt: balA.usdt }, B: { kite: balB.kite, usdt: balB.usdt } },
+          message: `Balances OK — A: ${parseFloat(balA.kite).toFixed(4)} KITE | B: ${parseFloat(balB.kite).toFixed(4)} KITE | C: ${parseFloat(balC.kite).toFixed(4)} KITE`,
+          balances: {
+            A: { kite: balA.kite, usdt: balA.usdt },
+            B: { kite: balB.kite, usdt: balB.usdt },
+            C: { kite: balC.kite, usdt: balC.usdt },
+          },
           spending: getSpendingState(),
         });
 
@@ -124,24 +135,26 @@ export async function POST(request: NextRequest) {
           spending: getSpendingState(),
         });
 
-        const [escrowA, escrowB] = await Promise.allSettled([
+        const [escrowA, escrowB, escrowC] = await Promise.allSettled([
           escrowFromAgent("A"),
           escrowFromAgent("B"),
+          escrowFromAgent("C"),
         ]);
 
         const escrowAResult = escrowA.status === "fulfilled" ? escrowA.value : { success: false, error: String(escrowA.reason) };
         const escrowBResult = escrowB.status === "fulfilled" ? escrowB.value : { success: false, error: String(escrowB.reason) };
+        const escrowCResult = escrowC.status === "fulfilled" ? escrowC.value : { success: false, error: String(escrowC.reason) };
 
-        if (!escrowAResult.success || !escrowBResult.success) {
+        if (!escrowAResult.success || !escrowBResult.success || !escrowCResult.success) {
           send("security", {
             phase: "escrow",
             status: "blocked",
             message: "Escrow failed — query aborted",
-            escrows: { A: escrowAResult, B: escrowBResult },
+            escrows: { A: escrowAResult, B: escrowBResult, C: escrowCResult },
             spending: getSpendingState(),
           });
           send("error", {
-            message: "Escrow failed. Both agents must escrow before proceeding.",
+            message: "Escrow failed. All agents must escrow before proceeding.",
           });
           return;
         }
@@ -150,18 +163,20 @@ export async function POST(request: NextRequest) {
         const escrowAmount = parseFloat(ESCROW_AMOUNT);
         recordSpending("A", escrowAmount);
         recordSpending("B", escrowAmount);
+        recordSpending("C", escrowAmount);
 
         send("security", {
           phase: "escrow",
           status: "passed",
-          message: `Both agents escrowed ${ESCROW_AMOUNT} KITE`,
-          escrows: { A: escrowAResult, B: escrowBResult },
+          message: `All agents escrowed ${ESCROW_AMOUNT} KITE`,
+          escrows: { A: escrowAResult, B: escrowBResult, C: escrowCResult },
           spending: getSpendingState(),
         });
 
         // Step 2: Query models
         send("step", { message: "Querying Agent A (OpenAI gpt-4o-mini)..." });
         send("step", { message: "Querying Agent B (Gemini 2.0 Flash)..." });
+        send("step", { message: "Querying Agent C (Claude claude-sonnet-4)..." });
 
         const individualResponses = await inputOrchestrator(query);
 
@@ -175,14 +190,20 @@ export async function POST(request: NextRequest) {
             ? `Agent B failed: ${individualResponses.gemini.error}`
             : `Agent B responded (${individualResponses.gemini.content.length} chars)`,
         });
+        send("step", {
+          message: individualResponses.claude.error
+            ? `Agent C failed: ${individualResponses.claude.error}`
+            : `Agent C responded (${individualResponses.claude.content.length} chars)`,
+        });
 
         // Step 3: Verify
-        send("step", { message: "Extracting verifiable claims from both responses..." });
+        send("step", { message: "Extracting verifiable claims from all responses..." });
 
         const verification = await runVerification(
           query,
           individualResponses.openai.content || "",
-          individualResponses.gemini.content || ""
+          individualResponses.gemini.content || "",
+          individualResponses.claude.content || ""
         );
 
         const totalClaims = verification.claims.allClaims.length;
@@ -191,21 +212,23 @@ export async function POST(request: NextRequest) {
           message: `Verification complete: ${totalClaims} claims classified, ${novelCount} novel insights found`,
         });
         send("step", {
-          message: `VeriScore — Agent A: ${Math.round(verification.scores.agentA.veriScore * 100)}% | Agent B: ${Math.round(verification.scores.agentB.veriScore * 100)}%`,
+          message: `VeriScore — Agent A: ${Math.round(verification.scores.agentA.veriScore * 100)}% | Agent B: ${Math.round(verification.scores.agentB.veriScore * 100)}% | Agent C: ${Math.round(verification.scores.agentC.veriScore * 100)}%`,
         });
+
+        const winner = verification.claims.winner;
         send("step", {
-          message: `Winner: Agent ${verification.claims.winner} (${verification.claims.winner === "A" ? "OpenAI" : "Gemini"})`,
+          message: `Winner: Agent ${winner} (${AGENT_NAMES[winner]})`,
         });
 
         // Step 4: Reward
-        send("step", { message: `Distributing rewards to Agent ${verification.claims.winner}...` });
+        send("step", { message: `Distributing rewards to Agent ${winner}...` });
 
         let reward = null;
         try {
-          reward = await distributeRewards(verification.claims.winner);
+          reward = await distributeRewards(winner);
           send("step", {
             message: reward.winnerTx.success
-              ? `Agent ${verification.claims.winner} rewarded ${reward.winnerAmount} KITE (tx: ${reward.winnerTx.transactionHash?.slice(0, 10)}...)`
+              ? `Agent ${winner} rewarded ${reward.winnerAmount} KITE (tx: ${reward.winnerTx.transactionHash?.slice(0, 10)}...)`
               : `Reward failed: ${reward.winnerTx.error}`,
           });
           send("step", { message: `Verifier kept ${reward.verifierCut} KITE as fee` });
@@ -217,7 +240,7 @@ export async function POST(request: NextRequest) {
         // Final result
         send("result", {
           verification,
-          transactions: { escrowA: escrowAResult, escrowB: escrowBResult, reward },
+          transactions: { escrowA: escrowAResult, escrowB: escrowBResult, escrowC: escrowCResult, reward },
           individualResponses,
         });
       } catch (error) {

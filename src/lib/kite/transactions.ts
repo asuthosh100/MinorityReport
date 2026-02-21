@@ -5,6 +5,7 @@ import {
   VERIFIER_CUT_PERCENT,
   SETTLEMENT_TOKEN,
 } from "./config";
+import type { AgentId } from "@/lib/types";
 
 export interface TransactionResult {
   success: boolean;
@@ -17,7 +18,7 @@ export interface TransactionResult {
  * Uses estimateUserOperation + sendUserOperationWithPayment for proper gas buffers.
  */
 async function transferKite(
-  from: "A" | "B" | "verifier",
+  from: AgentId | "verifier",
   toAddress: string,
   amount: string
 ): Promise<TransactionResult> {
@@ -57,7 +58,7 @@ async function transferKite(
  * Escrow KITE from an agent to the verifier's AA wallet.
  */
 export async function escrowFromAgent(
-  agent: "A" | "B"
+  agent: AgentId
 ): Promise<TransactionResult> {
   const verifierWallet = getAAWalletAddress("verifier");
   return transferKite(agent, verifierWallet, ESCROW_AMOUNT);
@@ -67,9 +68,9 @@ export async function escrowFromAgent(
  * Distribute the escrow pool: winner gets 90%, verifier keeps 10%.
  */
 export async function distributeRewards(
-  winner: "A" | "B"
+  winner: AgentId
 ): Promise<{ winnerTx: TransactionResult; verifierCut: string; winnerAmount: string }> {
-  const totalPool = parseFloat(ESCROW_AMOUNT) * 2;
+  const totalPool = parseFloat(ESCROW_AMOUNT) * 3;
   const verifierCut = (totalPool * VERIFIER_CUT_PERCENT) / 100;
   const winnerAmount = totalPool - verifierCut;
 

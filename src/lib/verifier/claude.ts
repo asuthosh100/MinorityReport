@@ -10,10 +10,11 @@ export interface VerificationResult {
 export async function runVerification(
   query: string,
   agentAResponse: string,
-  agentBResponse: string
+  agentBResponse: string,
+  agentCResponse: string
 ): Promise<VerificationResult> {
-  // Stage 1: Extract verifiable atomic claims from both responses
-  const extractedClaims = await extractClaims(agentAResponse, agentBResponse);
+  // Stage 1: Extract verifiable atomic claims from all three responses
+  const extractedClaims = await extractClaims(agentAResponse, agentBResponse, agentCResponse);
 
   // Stage 2: Cross-agent verification — unified comparison
   const claims = await verifyClaims(query, extractedClaims);

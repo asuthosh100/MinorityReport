@@ -1,11 +1,19 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useLayoutEffect } from "react";
+
+type AgentId = "A" | "B" | "C";
+
+const AGENT_NAMES: Record<AgentId, string> = {
+  A: "OpenAI",
+  B: "Gemini",
+  C: "Claude",
+};
 
 interface ClaimClassification {
   claim: string;
   originalText: string;
-  source: "A" | "B";
+  source: AgentId;
   status: "supported" | "contradicted" | "inconclusive" | "novel";
 }
 
@@ -32,19 +40,21 @@ interface QueryResult {
     claims: {
       allClaims: ClaimClassification[];
       consensusInsights: string[];
-      novelInsights: { agent: "A" | "B"; insight: string }[];
-      bestNovelInsight: { agent: "A" | "B"; insight: string; reasoning: string };
-      winner: "A" | "B";
+      novelInsights: { agent: AgentId; insight: string }[];
+      bestNovelInsight: { agent: AgentId; insight: string; reasoning: string };
+      winner: AgentId;
     };
     scores: {
       K: number;
       agentA: AgentScore;
       agentB: AgentScore;
+      agentC: AgentScore;
     };
   };
   transactions: {
     escrowA: { success: boolean; transactionHash?: string; error?: string };
     escrowB: { success: boolean; transactionHash?: string; error?: string };
+    escrowC: { success: boolean; transactionHash?: string; error?: string };
     reward: {
       winnerTx: { success: boolean; transactionHash?: string; error?: string };
       verifierCut: string;
@@ -54,13 +64,14 @@ interface QueryResult {
   individualResponses: {
     openai: { model: string; content: string; error?: string };
     gemini: { model: string; content: string; error?: string };
+    claude: { model: string; content: string; error?: string };
   };
 }
 
 const EXPLORER = "https://testnet.kitescan.ai";
 
 interface SpendingAgent {
-  agent: "A" | "B";
+  agent: AgentId;
   spent: number;
   cap: number;
   remaining: number;
@@ -71,11 +82,12 @@ interface SecurityEvent {
   phase: "spending_cap" | "balance_check" | "escrow";
   status: "checking" | "passed" | "blocked";
   message: string;
-  spending: { A: SpendingAgent; B: SpendingAgent };
-  balances?: { A: { kite: string; usdt: string }; B: { kite: string; usdt: string } };
+  spending: { A: SpendingAgent; B: SpendingAgent; C: SpendingAgent };
+  balances?: { A: { kite: string; usdt: string }; B: { kite: string; usdt: string }; C: { kite: string; usdt: string } };
   escrows?: {
     A: { success: boolean; transactionHash?: string; error?: string };
     B: { success: boolean; transactionHash?: string; error?: string };
+    C: { success: boolean; transactionHash?: string; error?: string };
   };
 }
 
@@ -237,11 +249,12 @@ function WalletPanel({ wallets }: { wallets: Record<string, WalletInfo | { error
   const agents = [
     { key: "agentA", label: "Agent A (OpenAI)" },
     { key: "agentB", label: "Agent B (Gemini)" },
+    { key: "agentC", label: "Agent C (Claude)" },
     { key: "verifier", label: "Verifier (Claude)" },
   ];
 
   return (
-    <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+    <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-4">
       {agents.map(({ key, label }) => {
         const data = wallets[key];
         if (!data || "error" in data) {
@@ -328,9 +341,10 @@ function SecurityPanel({ events }: { events: SecurityEvent[] }) {
       </div>
 
       {/* Spending bars */}
-      <div className="mb-4 grid grid-cols-2 gap-4">
+      <div className="mb-4 grid grid-cols-3 gap-4">
         <SpendingBar agent="A" data={spending.A} />
         <SpendingBar agent="B" data={spending.B} />
+        <SpendingBar agent="C" data={spending.C} />
       </div>
 
       {/* Phase chain */}
@@ -365,7 +379,7 @@ function SecurityPanel({ events }: { events: SecurityEvent[] }) {
 
       {/* Balance details if available */}
       {latestByPhase.balance_check?.balances && latestByPhase.balance_check.status === "passed" && (
-        <div className="mt-3 grid grid-cols-2 gap-4 text-xs text-zinc-400">
+        <div className="mt-3 grid grid-cols-3 gap-4 text-xs text-zinc-400">
           <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
             <span>Agent A on-chain</span>
             <span className="font-mono text-zinc-200">{parseFloat(latestByPhase.balance_check.balances.A.kite).toFixed(4)} KITE</span>
@@ -374,12 +388,16 @@ function SecurityPanel({ events }: { events: SecurityEvent[] }) {
             <span>Agent B on-chain</span>
             <span className="font-mono text-zinc-200">{parseFloat(latestByPhase.balance_check.balances.B.kite).toFixed(4)} KITE</span>
           </div>
+          <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
+            <span>Agent C on-chain</span>
+            <span className="font-mono text-zinc-200">{parseFloat(latestByPhase.balance_check.balances.C.kite).toFixed(4)} KITE</span>
+          </div>
         </div>
       )}
 
       {/* Escrow tx hashes if available */}
       {latestByPhase.escrow?.escrows && latestByPhase.escrow.status === "passed" && (
-        <div className="mt-2 grid grid-cols-2 gap-4 text-xs text-zinc-400">
+        <div className="mt-2 grid grid-cols-3 gap-4 text-xs text-zinc-400">
           {latestByPhase.escrow.escrows.A.transactionHash && (
             <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
               <span>Agent A escrow tx</span>
@@ -406,8 +424,96 @@ function SecurityPanel({ events }: { events: SecurityEvent[] }) {
               </a>
             </div>
           )}
+          {latestByPhase.escrow.escrows.C.transactionHash && (
+            <div className="flex justify-between rounded bg-zinc-800 px-2 py-1">
+              <span>Agent C escrow tx</span>
+              <a
+                href={`${EXPLORER}/tx/${latestByPhase.escrow.escrows.C.transactionHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-blue-400 underline"
+              >
+                {latestByPhase.escrow.escrows.C.transactionHash.slice(0, 10)}...
+              </a>
+            </div>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+function Overlay({ children, onClose, wide }: { children: React.ReactNode; onClose: () => void; wide?: boolean }) {
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className={`relative max-h-[85vh] w-full overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-6 shadow-2xl ${wide ? "max-w-5xl" : "max-w-3xl"}`}>
+        <button
+          onClick={onClose}
+          className="absolute right-3 top-3 rounded-md p-1 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const LEFT_MIN = 320;
+const LEFT_MAX = 600;
+const LEFT_DEFAULT = 420;
+
+function DragHandle({
+  onDrag,
+}: {
+  onDrag: (deltaX: number) => void;
+}) {
+  const dragging = useRef(false);
+  const lastX = useRef(0);
+
+  useEffect(() => {
+    function onMouseMove(e: MouseEvent) {
+      if (!dragging.current) return;
+      const dx = e.clientX - lastX.current;
+      lastX.current = e.clientX;
+      onDrag(dx);
+    }
+    function onMouseUp() {
+      dragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [onDrag]);
+
+  return (
+    <div
+      className="group relative z-10 flex w-2 shrink-0 cursor-col-resize items-center justify-center"
+      onMouseDown={(e) => {
+        e.preventDefault();
+        dragging.current = true;
+        lastX.current = e.clientX;
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+      }}
+    >
+      <div className="h-8 w-1 rounded-full bg-zinc-300 transition-colors group-hover:bg-zinc-500 dark:bg-zinc-700 dark:group-hover:bg-zinc-500" />
     </div>
   );
 }
@@ -422,6 +528,12 @@ export default function Home() {
   const [wallets, setWallets] = useState<Record<string, WalletInfo | { error: string }> | null>(null);
   const [securityEvents, setSecurityEvents] = useState<SecurityEvent[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT);
+  const [overlay, setOverlay] = useState<"security" | "transactions" | null>(null);
+
+  const handleDrag = useCallback((deltaX: number) => {
+    setLeftWidth((w) => Math.min(LEFT_MAX, Math.max(LEFT_MIN, w + deltaX)));
+  }, []);
 
   const scrollToBottom = useCallback(() => {
     requestAnimationFrame(() => {
@@ -515,6 +627,7 @@ export default function Home() {
 
   const agentAClaims = result?.verification.claims.allClaims.filter((c) => c.source === "A") || [];
   const agentBClaims = result?.verification.claims.allClaims.filter((c) => c.source === "B") || [];
+  const agentCClaims = result?.verification.claims.allClaims.filter((c) => c.source === "C") || [];
 
   const hasActivity = !!(submittedQuery || loading || result || error);
 
@@ -595,7 +708,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* Full-width results layout — sidebars + center */}
+        {/* Full-width results layout — left sidebar (security/tx) | drag handle | right (main content) */}
         {result && (
           <div className="w-full px-4 pb-6">
             {error && (
@@ -604,27 +717,81 @@ export default function Home() {
               </div>
             )}
 
-            <div className="flex gap-5">
-              {/* Left sidebar — VeriScores */}
-              <div className="hidden w-72 shrink-0 xl:block">
+            <div className="flex">
+              {/* Left sidebar — x402 Security + Kite Transactions + VeriScores */}
+              <div className="hidden shrink-0 xl:block overflow-y-auto pr-1" style={{ width: leftWidth }}>
                 <div className="sticky top-6 space-y-4">
+                  {securityEvents.length > 0 && (
+                    <div
+                      className="cursor-pointer rounded-lg ring-zinc-600 transition-all hover:ring-2"
+                      onClick={() => setOverlay("security")}
+                      title="Click to expand"
+                    >
+                      <SecurityPanel events={securityEvents} />
+                    </div>
+                  )}
+
+                  <div
+                    className="cursor-pointer rounded-lg border border-zinc-200 bg-white p-4 ring-zinc-600 transition-all hover:ring-2 dark:border-zinc-800 dark:bg-zinc-900"
+                    onClick={() => setOverlay("transactions")}
+                    title="Click to expand"
+                  >
+                    <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                      Kite Transactions
+                    </h3>
+                    <div className="space-y-2 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-600 dark:text-zinc-400">Agent A Escrow</span>
+                        <TxLink hash={result.transactions.escrowA.transactionHash} />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-600 dark:text-zinc-400">Agent B Escrow</span>
+                        <TxLink hash={result.transactions.escrowB.transactionHash} />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-600 dark:text-zinc-400">Agent C Escrow</span>
+                        <TxLink hash={result.transactions.escrowC.transactionHash} />
+                      </div>
+                      {result.transactions.reward && (
+                        <>
+                          <hr className="border-zinc-200 dark:border-zinc-700" />
+                          <div className="flex items-center justify-between">
+                            <span className="text-zinc-600 dark:text-zinc-400">Winner Reward ({result.transactions.reward.winnerAmount} KITE)</span>
+                            <TxLink hash={result.transactions.reward.winnerTx.transactionHash} />
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-zinc-600 dark:text-zinc-400">Verifier Cut ({result.transactions.reward.verifierCut} KITE)</span>
+                            <span className="text-xs text-zinc-400">retained</span>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
                   <ScoreCard label="Agent A — OpenAI" score={result.verification.scores.agentA} />
                   <ScoreCard label="Agent B — Gemini" score={result.verification.scores.agentB} />
+                  <ScoreCard label="Agent C — Claude" score={result.verification.scores.agentC} />
                 </div>
               </div>
 
-              {/* Center — main content */}
-              <div className="min-w-0 flex-1 space-y-5">
-                {/* VeriScore Cards — visible on smaller screens where sidebars are hidden */}
-                <div className="grid grid-cols-2 gap-4 xl:hidden">
+              {/* Drag handle — visible on xl+ */}
+              <div className="hidden xl:flex">
+                <DragHandle onDrag={handleDrag} />
+              </div>
+
+              {/* Right — main content */}
+              <div className="min-w-0 flex-1 space-y-5 pl-1">
+                {/* VeriScore Cards — visible on smaller screens where left sidebar is hidden */}
+                <div className="grid grid-cols-3 gap-4 xl:hidden">
                   <ScoreCard label="Agent A — OpenAI" score={result.verification.scores.agentA} />
                   <ScoreCard label="Agent B — Gemini" score={result.verification.scores.agentB} />
+                  <ScoreCard label="Agent C — Claude" score={result.verification.scores.agentC} />
                 </div>
 
                 {/* Winner */}
                 <div className="rounded-lg border-2 border-green-300 bg-green-50 p-4 dark:border-green-800 dark:bg-green-950">
                   <span className="text-lg font-bold text-green-700 dark:text-green-400">
-                    Winner: Agent {result.verification.claims.winner} ({result.verification.claims.winner === "A" ? "OpenAI" : "Gemini"})
+                    Winner: Agent {result.verification.claims.winner} ({AGENT_NAMES[result.verification.claims.winner]})
                   </span>
                   <p className="mt-2 text-sm text-green-800 dark:text-green-300">
                     <strong>Best novel insight:</strong> {result.verification.claims.bestNovelInsight.insight}
@@ -635,7 +802,7 @@ export default function Home() {
                 </div>
 
                 {/* Agent Responses */}
-                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
                   {/* Agent A */}
                   <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
                     <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
@@ -691,13 +858,41 @@ export default function Home() {
                       )}
                     </div>
                   </div>
+
+                  {/* Agent C */}
+                  <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+                    <div className="border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+                      <h3 className="font-semibold text-zinc-800 dark:text-zinc-200">Agent C — {result.individualResponses.claude.model}</h3>
+                      <div className="mt-1 flex flex-wrap gap-1.5 text-xs">
+                        <span className="rounded bg-green-200 px-1.5 py-0.5 text-green-800 dark:bg-green-800 dark:text-green-200">
+                          {agentCClaims.filter((c) => c.status === "supported").length} supported
+                        </span>
+                        <span className="rounded bg-red-200 px-1.5 py-0.5 text-red-800 dark:bg-red-800 dark:text-red-200">
+                          {agentCClaims.filter((c) => c.status === "contradicted").length} contradicted
+                        </span>
+                        <span className="rounded bg-yellow-200 px-1.5 py-0.5 text-yellow-800 dark:bg-yellow-800 dark:text-yellow-200">
+                          {agentCClaims.filter((c) => c.status === "inconclusive").length} inconclusive
+                        </span>
+                        <span className="rounded bg-green-300 px-1.5 py-0.5 text-green-900 dark:bg-green-700 dark:text-green-100">
+                          {agentCClaims.filter((c) => c.status === "novel").length} novel
+                        </span>
+                      </div>
+                    </div>
+                    <div className="p-4">
+                      {result.individualResponses.claude.error ? (
+                        <p className="text-red-500">{result.individualResponses.claude.error}</p>
+                      ) : (
+                        <StreamingResponse content={result.individualResponses.claude.content} claims={agentCClaims} />
+                      )}
+                    </div>
+                  </div>
                 </div>
 
                 {/* Combined Analysis */}
                 {result.verification.claims.consensusInsights.length > 0 && (
                   <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
                     <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                      Consensus Insights (Both Agents Agree)
+                      Consensus Insights (Multiple Agents Agree)
                     </h3>
                     <ul className="space-y-1">
                       {result.verification.claims.consensusInsights.map((insight, i) => (
@@ -727,44 +922,20 @@ export default function Home() {
 
                 {/* x402 + Kite Transactions — visible on smaller screens below content */}
                 <div className="space-y-4 xl:hidden">
-                  {securityEvents.length > 0 && <SecurityPanel events={securityEvents} />}
-                  <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                    <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                      Kite Transactions
-                    </h3>
-                    <div className="space-y-2 text-sm">
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-600 dark:text-zinc-400">Agent A Escrow</span>
-                        <TxLink hash={result.transactions.escrowA.transactionHash} />
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-zinc-600 dark:text-zinc-400">Agent B Escrow</span>
-                        <TxLink hash={result.transactions.escrowB.transactionHash} />
-                      </div>
-                      {result.transactions.reward && (
-                        <>
-                          <hr className="border-zinc-200 dark:border-zinc-700" />
-                          <div className="flex items-center justify-between">
-                            <span className="text-zinc-600 dark:text-zinc-400">Winner Reward ({result.transactions.reward.winnerAmount} KITE)</span>
-                            <TxLink hash={result.transactions.reward.winnerTx.transactionHash} />
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className="text-zinc-600 dark:text-zinc-400">Verifier Cut ({result.transactions.reward.verifierCut} KITE)</span>
-                            <span className="text-xs text-zinc-400">retained</span>
-                          </div>
-                        </>
-                      )}
+                  {securityEvents.length > 0 && (
+                    <div
+                      className="cursor-pointer rounded-lg ring-zinc-600 transition-all hover:ring-2"
+                      onClick={() => setOverlay("security")}
+                      title="Click to expand"
+                    >
+                      <SecurityPanel events={securityEvents} />
                     </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Right sidebar — x402 Security + Kite Transactions */}
-              <div className="hidden w-[500px] shrink-0 xl:block">
-                <div className="sticky top-6 space-y-4">
-                  {securityEvents.length > 0 && <SecurityPanel events={securityEvents} />}
-
-                  <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                  )}
+                  <div
+                    className="cursor-pointer rounded-lg border border-zinc-200 bg-white p-4 ring-zinc-600 transition-all hover:ring-2 dark:border-zinc-800 dark:bg-zinc-900"
+                    onClick={() => setOverlay("transactions")}
+                    title="Click to expand"
+                  >
                     <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                       Kite Transactions
                     </h3>
@@ -776,6 +947,10 @@ export default function Home() {
                       <div className="flex items-center justify-between">
                         <span className="text-zinc-600 dark:text-zinc-400">Agent B Escrow</span>
                         <TxLink hash={result.transactions.escrowB.transactionHash} />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-zinc-600 dark:text-zinc-400">Agent C Escrow</span>
+                        <TxLink hash={result.transactions.escrowC.transactionHash} />
                       </div>
                       {result.transactions.reward && (
                         <>
@@ -795,6 +970,49 @@ export default function Home() {
                 </div>
               </div>
             </div>
+
+            {/* Security overlay */}
+            {overlay === "security" && securityEvents.length > 0 && (
+              <Overlay onClose={() => setOverlay(null)} wide>
+                <SecurityPanel events={securityEvents} />
+              </Overlay>
+            )}
+
+            {/* Transactions overlay */}
+            {overlay === "transactions" && (
+              <Overlay onClose={() => setOverlay(null)}>
+                <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-zinc-400">
+                  Kite Transactions
+                </h3>
+                <div className="space-y-3 text-sm">
+                  <div className="flex items-center justify-between rounded bg-zinc-800 px-3 py-2">
+                    <span className="text-zinc-300">Agent A Escrow</span>
+                    <TxLink hash={result.transactions.escrowA.transactionHash} />
+                  </div>
+                  <div className="flex items-center justify-between rounded bg-zinc-800 px-3 py-2">
+                    <span className="text-zinc-300">Agent B Escrow</span>
+                    <TxLink hash={result.transactions.escrowB.transactionHash} />
+                  </div>
+                  <div className="flex items-center justify-between rounded bg-zinc-800 px-3 py-2">
+                    <span className="text-zinc-300">Agent C Escrow</span>
+                    <TxLink hash={result.transactions.escrowC.transactionHash} />
+                  </div>
+                  {result.transactions.reward && (
+                    <>
+                      <hr className="border-zinc-700" />
+                      <div className="flex items-center justify-between rounded bg-zinc-800 px-3 py-2">
+                        <span className="text-zinc-300">Winner Reward ({result.transactions.reward.winnerAmount} KITE)</span>
+                        <TxLink hash={result.transactions.reward.winnerTx.transactionHash} />
+                      </div>
+                      <div className="flex items-center justify-between rounded bg-zinc-800 px-3 py-2">
+                        <span className="text-zinc-300">Verifier Cut ({result.transactions.reward.verifierCut} KITE)</span>
+                        <span className="text-xs text-zinc-400">retained</span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </Overlay>
+            )}
           </div>
         )}
       </div>

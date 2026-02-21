@@ -1,5 +1,6 @@
 import { getBalance } from "@/lib/kite/wallets";
 import { ESCROW_AMOUNT } from "@/lib/kite/config";
+import type { AgentId } from "@/lib/types";
 
 // --- Rate Limiter (in-memory, resets on cold start) ---
 
@@ -32,9 +33,10 @@ const SPENDING_CAP_KITE = 0.01; // max 0.01 KITE total per agent
 const spendingTracker: Record<string, number> = {
   A: 0,
   B: 0,
+  C: 0,
 };
 
-export function checkSpendingCap(agent: "A" | "B"): {
+export function checkSpendingCap(agent: AgentId): {
   allowed: boolean;
   spent: number;
   cap: number;
@@ -52,32 +54,32 @@ export function checkSpendingCap(agent: "A" | "B"): {
   };
 }
 
-export function recordSpending(agent: "A" | "B", amount: number): void {
+export function recordSpending(agent: AgentId, amount: number): void {
   spendingTracker[agent] = (spendingTracker[agent] || 0) + amount;
 }
 
 export interface SpendingState {
-  agent: "A" | "B";
+  agent: AgentId;
   spent: number;
   cap: number;
   remaining: number;
   percent: number;
 }
 
-export function getSpendingState(): { A: SpendingState; B: SpendingState } {
-  function build(agent: "A" | "B"): SpendingState {
+export function getSpendingState(): { A: SpendingState; B: SpendingState; C: SpendingState } {
+  function build(agent: AgentId): SpendingState {
     const spent = spendingTracker[agent] || 0;
     const remaining = SPENDING_CAP_KITE - spent;
     const percent = Math.min((spent / SPENDING_CAP_KITE) * 100, 100);
     return { agent, spent, cap: SPENDING_CAP_KITE, remaining, percent };
   }
-  return { A: build("A"), B: build("B") };
+  return { A: build("A"), B: build("B"), C: build("C") };
 }
 
 // --- Pre-flight Balance Check ---
 
 export interface BalanceCheckResult {
-  agent: "A" | "B";
+  agent: AgentId;
   ok: boolean;
   kite: string;
   usdt: string;
@@ -86,7 +88,7 @@ export interface BalanceCheckResult {
 }
 
 export async function preflightBalanceCheck(
-  agent: "A" | "B"
+  agent: AgentId
 ): Promise<BalanceCheckResult> {
   const needed = ESCROW_AMOUNT;
 

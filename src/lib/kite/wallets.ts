@@ -6,6 +6,7 @@ import {
   KITE_BUNDLER_URL,
   SETTLEMENT_TOKEN,
 } from "./config";
+import type { AgentId } from "@/lib/types";
 
 let sdkInstance: GokiteAASDK | null = null;
 
@@ -16,30 +17,32 @@ export function getSDK(): GokiteAASDK {
   return sdkInstance;
 }
 
-function getPrivateKey(agent: "A" | "B" | "verifier"): string {
-  const envVar =
-    agent === "A"
-      ? "AGENT_A_PRIVATE_KEY"
-      : agent === "B"
-        ? "AGENT_B_PRIVATE_KEY"
-        : "VERIFIER_PRIVATE_KEY";
+const PRIVATE_KEY_ENV: Record<AgentId | "verifier", string> = {
+  A: "AGENT_A_PRIVATE_KEY",
+  B: "AGENT_B_PRIVATE_KEY",
+  C: "AGENT_C_PRIVATE_KEY",
+  verifier: "VERIFIER_PRIVATE_KEY",
+};
+
+function getPrivateKey(agent: AgentId | "verifier"): string {
+  const envVar = PRIVATE_KEY_ENV[agent];
   const key = process.env[envVar];
   if (!key) throw new Error(`${envVar} is not set`);
   return key;
 }
 
-export function getEOA(agent: "A" | "B" | "verifier"): string {
+export function getEOA(agent: AgentId | "verifier"): string {
   const wallet = new ethers.Wallet(getPrivateKey(agent));
   return wallet.address;
 }
 
-export function getAAWalletAddress(agent: "A" | "B" | "verifier"): string {
+export function getAAWalletAddress(agent: AgentId | "verifier"): string {
   const sdk = getSDK();
   return sdk.getAccountAddress(getEOA(agent));
 }
 
 export function getSignFunction(
-  agent: "A" | "B" | "verifier"
+  agent: AgentId | "verifier"
 ): (userOpHash: string) => Promise<string> {
   const pk = getPrivateKey(agent);
   return async (userOpHash: string) => {
@@ -49,7 +52,7 @@ export function getSignFunction(
 }
 
 export async function getBalance(
-  agent: "A" | "B" | "verifier"
+  agent: AgentId | "verifier"
 ): Promise<{ kite: string; usdt: string }> {
   const provider = new ethers.JsonRpcProvider(KITE_RPC_URL);
   const aaAddress = getAAWalletAddress(agent);
@@ -70,7 +73,7 @@ export async function getBalance(
 }
 
 export async function getAllWalletInfo() {
-  const agents = ["A", "B", "verifier"] as const;
+  const agents = ["A", "B", "C", "verifier"] as const;
   const results = await Promise.allSettled(
     agents.map(async (agent) => ({
       agent,
@@ -85,7 +88,9 @@ export async function getAllWalletInfo() {
       results[0].status === "fulfilled" ? results[0].value : { error: String((results[0] as PromiseRejectedResult).reason) },
     agentB:
       results[1].status === "fulfilled" ? results[1].value : { error: String((results[1] as PromiseRejectedResult).reason) },
-    verifier:
+    agentC:
       results[2].status === "fulfilled" ? results[2].value : { error: String((results[2] as PromiseRejectedResult).reason) },
+    verifier:
+      results[3].status === "fulfilled" ? results[3].value : { error: String((results[3] as PromiseRejectedResult).reason) },
   };
 }
