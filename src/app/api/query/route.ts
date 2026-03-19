@@ -13,6 +13,7 @@ import {
   getSpendingState,
 } from "@/lib/x402/security";
 import { AGENT_NAMES } from "@/lib/types";
+import { isDemoQuery, getDemoResponses, getDemoVerification } from "@/lib/demo";
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
@@ -175,54 +176,103 @@ export async function POST(request: NextRequest) {
           spending: getSpendingState(),
         });
 
-        // Step 2: Query models
+        // Check if this is a demo query (Wizard of Oz mode)
+        const demoMode = isDemoQuery(query);
+
+        // Helper for staggered demo delays (randomised so it feels organic)
+        const wait = (ms: number) => new Promise((r) => setTimeout(r, ms + Math.random() * ms * 0.3));
+
+        // Step 2: Query models  (~9s total in demo)
         send("step", { message: "Querying Agent A (OpenAI gpt-4o-mini)..." });
+        if (demoMode) await wait(500);
         send("step", { message: "Querying Agent B (Gemini 2.0 Flash)..." });
+        if (demoMode) await wait(400);
         send("step", { message: "Querying Agent C (Claude claude-sonnet-4)..." });
 
-        const individualResponses = await inputOrchestrator(query);
+        let individualResponses;
+        if (demoMode) {
+          await wait(2500);
+          individualResponses = getDemoResponses();
+          console.log("[Demo] Using hardcoded LLM responses");
 
-        send("step", {
-          message: individualResponses.openai.error
-            ? `Agent A failed: ${individualResponses.openai.error}`
-            : `Agent A responded (${individualResponses.openai.content.length} chars)`,
-        });
-        send("step", {
-          message: individualResponses.gemini.error
-            ? `Agent B failed: ${individualResponses.gemini.error}`
-            : `Agent B responded (${individualResponses.gemini.content.length} chars)`,
-        });
-        send("step", {
-          message: individualResponses.claude.error
-            ? `Agent C failed: ${individualResponses.claude.error}`
-            : `Agent C responded (${individualResponses.claude.content.length} chars)`,
-        });
+          send("step", {
+            message: `Agent B responded (${individualResponses.gemini.content.length} chars)`,
+          });
+          await wait(1500);
+          send("step", {
+            message: `Agent A responded (${individualResponses.openai.content.length} chars)`,
+          });
+          await wait(2800);
+          send("step", {
+            message: `Agent C responded (${individualResponses.claude.content.length} chars)`,
+          });
+        } else {
+          individualResponses = await inputOrchestrator(query);
 
-        // Step 3: Verify
+          send("step", {
+            message: individualResponses.openai.error
+              ? `Agent A failed: ${individualResponses.openai.error}`
+              : `Agent A responded (${individualResponses.openai.content.length} chars)`,
+          });
+          send("step", {
+            message: individualResponses.gemini.error
+              ? `Agent B failed: ${individualResponses.gemini.error}`
+              : `Agent B responded (${individualResponses.gemini.content.length} chars)`,
+          });
+          send("step", {
+            message: individualResponses.claude.error
+              ? `Agent C failed: ${individualResponses.claude.error}`
+              : `Agent C responded (${individualResponses.claude.content.length} chars)`,
+          });
+        }
+
+        // Step 3: Verify  (~22s total in demo)
+        if (demoMode) await wait(1000);
         send("step", { message: "Sending responses to VeriScore VM for claim extraction (this may take a few minutes)..." });
 
-        const verification = await runVerification(
-          query,
-          individualResponses.openai.content || "",
-          individualResponses.gemini.content || "",
-          individualResponses.claude.content || "",
-          () => send("step", { message: "Running cross-LLM classifier analysis..." })
-        );
+        let verification;
+        if (demoMode) {
+          await wait(4000);
+          send("step", { message: "Extracting claims from Agent A response..." });
+          await wait(3500);
+          send("step", { message: "Extracting claims from Agent B response..." });
+          await wait(3500);
+          send("step", { message: "Extracting claims from Agent C response..." });
+          await wait(3000);
+
+          send("step", { message: "Running cross-LLM classifier analysis..." });
+          await wait(5000);
+
+          verification = getDemoVerification();
+          console.log("[Demo] Using hardcoded verification results from result_new.json");
+        } else {
+          verification = await runVerification(
+            query,
+            individualResponses.openai.content || "",
+            individualResponses.gemini.content || "",
+            individualResponses.claude.content || "",
+            () => send("step", { message: "Running cross-LLM classifier analysis..." })
+          );
+        }
 
         const totalClaims = verification.claims.allClaims.length;
+        if (demoMode) await wait(800);
         send("step", {
           message: `VeriScore complete: ${totalClaims} claims verified across all agents`,
         });
+        if (demoMode) await wait(1000);
         send("step", {
           message: `Precision — Agent A: ${Math.round(verification.scores.agentA.precision * 100)}% | Agent B: ${Math.round(verification.scores.agentB.precision * 100)}% | Agent C: ${Math.round(verification.scores.agentC.precision * 100)}%`,
         });
 
+        if (demoMode) await wait(600);
         const winner = verification.claims.winner;
         send("step", {
           message: `Winner: Agent ${winner} (${AGENT_NAMES[winner]})`,
         });
 
         // Step 4: Reward
+        if (demoMode) await wait(800);
         send("step", { message: `Distributing rewards to Agent ${winner}...` });
 
         let reward = null;

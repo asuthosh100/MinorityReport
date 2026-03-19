@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Minority Report",
+  title: "DeSponsio",
   description: "Multi-model AI orchestrator with VeriScore verification and Kite escrow",
 };
 

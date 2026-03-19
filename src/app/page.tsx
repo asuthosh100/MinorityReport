@@ -339,12 +339,10 @@ export default function Home() {
     };
   }, [result, submittedQuery]);
 
-  // Auto-select supported claims when result arrives
+  // Reset filters when new results arrive — user must manually select claims
   useEffect(() => {
     if (curatorClaims.length > 0) {
-      const init = new Set<number>();
-      curatorClaims.forEach((c) => { if (c.status === "supported") init.add(c.id); });
-      setSelected(init);
+      setSelected(new Set<number>());
       setSearchQuery("");
       setNovelOnly(false);
       setModelFilter(new Set(["claude", "gemini", "gpt-4"]));
@@ -383,6 +381,7 @@ export default function Home() {
       const next = new Set(prev);
       const t = filtered;
       if (action === "add_supported") t.filter((c) => c.status === "supported").forEach((c) => next.add(c.id));
+      if (action === "remove_supported") t.filter((c) => c.status === "supported").forEach((c) => next.delete(c.id));
       if (action === "remove_contradicted") t.filter((c) => c.status === "contradicted").forEach((c) => next.delete(c.id));
       if (action === "add_inconclusive") t.filter((c) => c.status === "inconclusive").forEach((c) => next.add(c.id));
       if (action === "remove_inconclusive") t.filter((c) => c.status === "inconclusive").forEach((c) => next.delete(c.id));
@@ -489,7 +488,7 @@ export default function Home() {
           <div style={{ maxWidth: 800, margin: "0 auto", padding: "24px 16px" }}>
             {!hasActivity && (
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "60vh" }}>
-                <h1 style={{ fontSize: 28, fontWeight: 700, color: "#e0e0e0", marginBottom: 4 }}>Minority Report</h1>
+                <h1 style={{ fontSize: 28, fontWeight: 700, color: "#e0e0e0", marginBottom: 4 }}>DeSponsio</h1>
                 <p style={{ color: "#666", fontSize: 13, marginBottom: 32 }}>
                   Multi-model AI orchestrator with VeriScore verification and Kite escrow
                 </p>
@@ -656,7 +655,7 @@ export default function Home() {
       {/* Header */}
       <div style={{ borderBottom: "1px solid #222", padding: "12px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, background: "#0a0a0a", zIndex: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: 18, fontWeight: 700 }}>Minority Report</span>
+          <span style={{ fontSize: 18, fontWeight: 700 }}>DeSponsio</span>
           <span style={{ fontSize: 11, color: "#666", border: "1px solid #333", padding: "2px 8px", borderRadius: 4 }}>{stats.inDataset}/{stats.total} claims</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -825,6 +824,7 @@ export default function Home() {
           <span style={{ fontSize: 10, color: "#555", lineHeight: "24px", marginRight: 8, textTransform: "uppercase", letterSpacing: 1 }}>Quick:</span>
           {([
             ["add_supported", "+ Verified", "#166534"],
+            ["remove_supported", "- Verified", "#166534"],
             ["remove_contradicted", "- Wrong", "#991b1b"],
             ["add_inconclusive", "+ Inconclusive", "#854d0e"],
             ["remove_inconclusive", "- Inconclusive", "#854d0e"],
